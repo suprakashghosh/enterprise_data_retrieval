@@ -545,7 +545,7 @@ This ensures re-running the pipeline on the same input yields the same IDs, enab
 
 ### Sub-Task 9: Process Images/Charts/Graphs — Asset Saving, Classification, Metadata (R12)
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Extract images, charts, and graphs from Docling output, save them as dedicated assets, classify their visual type, and prepare metadata (with extensibility for future vision-language descriptions).
 - **Related Requirements:** R12 (Image/Chart/Graph Processing)
 - **Dependencies and Preconditions:** Sub-Task 6 (normalized elements with ImageSchema/ChartSchema/GraphSchema). Sub-Task 4 (page and table images already saved by Docling).
