@@ -237,7 +237,7 @@ This ensures re-running the pipeline on the same input yields the same IDs, enab
 
 ### Sub-Task 3: Implement Document Ingestion and Raw Document Storage (R5)
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Create the ingestion module that accepts PDF files (or a directory of PDFs), creates a document record, stores the raw PDF immutably, and prepares for extraction.
 - **Related Requirements:** R5 (Raw Document Storage)
 - **Dependencies and Preconditions:** Sub-Task 2 (project structure, file I/O utils, config). Sub-Task 1 (schemas for document records).
@@ -287,7 +287,7 @@ This ensures re-running the pipeline on the same input yields the same IDs, enab
 
 ### Sub-Task 4: Implement Docling Extraction and Persist Raw Outputs (R1, R6)
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Use Docling to convert ingested PDFs into Docling's native document format and persist all raw outputs (JSON, markdown, page images, table images, asset files) for audit and re-processing.
 - **Related Requirements:** R1 (Docling Extraction), R6 (Docling Output Persistence)
 - **Dependencies and Preconditions:** Sub-Task 3 (ingestion and raw storage). Sub-Task 2 (utils, config). Docling must be installed.
@@ -339,7 +339,7 @@ This ensures re-running the pipeline on the same input yields the same IDs, enab
 
 ### Sub-Task 5: Validate Docling Outputs (R7)
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Validate the raw Docling outputs for completeness, consistency, and structural integrity before normalization.
 - **Related Requirements:** R7 (Output Validation)
 - **Dependencies and Preconditions:** Sub-Task 4 (Docling extraction and persistence).
