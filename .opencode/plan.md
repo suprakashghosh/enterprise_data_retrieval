@@ -385,7 +385,7 @@ This ensures re-running the pipeline on the same input yields the same IDs, enab
 
 ### Sub-Task 6: Normalize Docling Output into Internal Objects and Create Element Registry (R8, R9)
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Convert the raw Docling document into the project's internal `DocumentSchema` with all typed elements, preserving page numbers, bounding boxes, reading order, section assignments, captions, and layout proximity.
 - **Related Requirements:** R8 (Normalization & Registry), R9 (Positional & Structural Preservation)
 - **Dependencies and Preconditions:** Sub-Task 5 (validation), Sub-Task 1 (schemas), Sub-Task 4 (Docling output persisted).
