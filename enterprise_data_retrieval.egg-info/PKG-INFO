@@ -1,3 +1,20 @@
+Metadata-Version: 2.4
+Name: enterprise_data_retrieval
+Version: 0.1.0
+Summary: Production-grade extraction and structured chunking pipeline for complex documents
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: docling>=2.0
+Requires-Dist: pydantic>=2.0
+Requires-Dist: orjson>=3.0
+Requires-Dist: pyarrow>=10.0
+Requires-Dist: pandas>=2.0
+Requires-Dist: numpy>=1.24
+Requires-Dist: pdfminer.six[image]
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+
 # Enterprise Data Retrieval (Mugen)
 
 An early-stage research prototype for enterprise-grade document intelligence and retrieval-augmented generation (RAG), purpose-built for **complex, visually rich documents** such as financial reports, research papers, and corporate filings.
