@@ -494,7 +494,7 @@ This ensures re-running the pipeline on the same input yields the same IDs, enab
 
 ### Sub-Task 8: Process Tables into Structured Representations (R11)
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Extract all tables from the normalized document, convert them into multiple structured formats (markdown, HTML, JSON, plain-text summary), compute table metadata, and handle multi-page/spanned tables.
 - **Related Requirements:** R11 (Table Processing)
 - **Dependencies and Preconditions:** Sub-Task 6 (normalized elements with TableSchema entries). Sub-Task 7 (section paths available for table elements).
