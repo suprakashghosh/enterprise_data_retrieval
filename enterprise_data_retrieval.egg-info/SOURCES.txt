@@ -9,9 +9,12 @@ src/__init__.py
 src/agentic_reasoning.py
 src/chunking/__init__.py
 src/extraction/__init__.py
+src/extraction/docling_extractor.py
 src/ingestion/__init__.py
+src/ingestion/ingestor.py
 src/metadata/__init__.py
 src/normalization/__init__.py
+src/normalization/docling_normalizer.py
 src/schemas/__init__.py
 src/schemas/chunks.py
 src/schemas/document.py
@@ -25,6 +28,12 @@ src/utils/config.py
 src/utils/file_io.py
 src/utils/logging.py
 src/validation/__init__.py
+src/validation/docling_validator.py
+src/validation/models.py
 tests/__init__.py
+tests/test_extraction.py
+tests/test_ingestion.py
+tests/test_normalization.py
 tests/test_schemas.py
 tests/test_utils.py
+tests/test_validation.py

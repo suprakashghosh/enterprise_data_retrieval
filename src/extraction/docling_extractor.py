@@ -72,10 +72,12 @@ class DoclingAdapter:
 
         try:
             from docling.datamodel.pipeline_options import (
+                CodeFormulaVlmOptions,
                 PdfPipelineOptions,
                 TableFormerMode,
             )
             from docling.document_converter import DocumentConverter
+            from docling_core.types.doc import CodeItem, FormulaItem
         except ImportError as exc:
             raise ImportError(
                 "Docling is required for PDF extraction.  "
@@ -100,6 +102,14 @@ class DoclingAdapter:
             pipeline_opts.generate_table_images = True
         if hasattr(pipeline_opts, "generate_picture_images"):
             pipeline_opts.generate_picture_images = True
+        if hasattr(pipeline_opts, "do_formula_enrichment"):
+            pipeline_opts.do_formula_enrichment = True
+        if hasattr(pipeline_opts, "do_code_enrichment"):
+            pipeline_opts.do_code_enrichment = True
+        if hasattr(pipeline_opts, "code_formula_options"):
+            preset_name= 'default' #preset_name: Name of the preset to use ('codeformulav2' or 'granite_docling')
+            code_formula_options = CodeFormulaVlmOptions.from_preset(preset_name)
+            pipeline_opts.code_formula_options = code_formula_options
 
         # Construct the converter with custom pipeline options.
         # Docling v2.x APIs differ across minor versions; we try the
@@ -351,6 +361,54 @@ def _save_page_images(dl_doc: Any, pages_dir: Path) -> int:
     return saved
 
 
+def _save_picture_images(dl_doc: Any, pictures_dir: Path) -> int:
+    """Save picture images from *dl_doc* into *pictures_dir*.
+
+    Best-effort: if picture image APIs are absent the function returns 0
+    without raising.
+
+    Returns the number of successfully saved picture images.
+    """
+    saved = 0
+    pictures = getattr(dl_doc, "pictures", [])
+    if isinstance(pictures, dict):
+        pic_iter = pictures.values()
+    elif isinstance(pictures, (list, tuple)):
+        pic_iter = pictures
+    else:
+        return 0
+
+    for idx, pic in enumerate(pic_iter):
+        try:
+            # --- Path A: get_image method (similar to TableItem) ---
+            get_image_method = getattr(pic, "get_image", None)
+            if callable(get_image_method):
+                img = get_image_method(dl_doc)
+                if img is not None:
+                    img.save(str(pictures_dir / f"picture_{idx}.png"))
+                    saved += 1
+                    continue
+
+            # --- Path B: pic.save(path) ---
+            save_method = getattr(pic, "save", None)
+            if callable(save_method):
+                save_method(str(pictures_dir / f"picture_{idx}.png"))
+                saved += 1
+                continue
+
+            # --- Path C: direct PIL .image attribute ---
+            img = getattr(pic, "image", None)
+            if img is not None and hasattr(img, "save"):
+                img.save(str(pictures_dir / f"picture_{idx}.png"))
+                saved += 1
+                continue
+        except (AttributeError, OSError, TypeError, ImportError) as exc:
+            logger.debug("Could not save picture image for picture %s: %s", idx, exc)
+
+    return saved
+
+
+
 def _save_table_images(dl_doc: Any, tables_dir: Path) -> int:
     """Save table images from *dl_doc* into *tables_dir*.
 
@@ -411,6 +469,7 @@ def persist_docling_outputs(
     * ``output.md`` — Markdown export.
     * ``pages/`` — Page images (best-effort).
     * ``tables/`` — Table images (best-effort).
+    * ``pictures/`` — Picture images (best-effort).
     * ``assets/`` — Asset storage directory (empty for now).
     * ``version.txt`` — Installed Docling version.
 
@@ -437,6 +496,7 @@ def persist_docling_outputs(
     docling_dir = ensure_dir(doc_dir / "docling")
     pages_dir = ensure_dir(docling_dir / "pages")
     tables_dir = ensure_dir(docling_dir / "tables")
+    pictures_dir = ensure_dir(docling_dir / "pictures")
     assets_dir = ensure_dir(docling_dir / "assets")
 
     outputs: dict[str, Path] = {}
@@ -471,6 +531,12 @@ def persist_docling_outputs(
     outputs["tables"] = tables_dir
 
     # ------------------------------------------------------------------
+    #  Picture images (best-effort)
+    # ------------------------------------------------------------------
+    _save_picture_images(dl_doc, pictures_dir)
+    outputs["pictures"] = pictures_dir
+
+    # ------------------------------------------------------------------
     #  Assets directory
     # ------------------------------------------------------------------
     outputs["assets"] = assets_dir
@@ -491,12 +557,13 @@ def persist_docling_outputs(
 
     logger.info(
         "Persisted Docling outputs for %s (JSON=%s, MD=%s, pages_dir=%s, "
-        "tables_dir=%s, assets_dir=%s, version=%s)",
+        "tables_dir=%s, pictures_dir=%s, assets_dir=%s, version=%s)",
         doc.doc_id,
         json_path,
         md_path,
         pages_dir,
         tables_dir,
+        pictures_dir,
         assets_dir,
         docling_version,
     )
@@ -611,6 +678,7 @@ def run_extraction_pipeline(
     started_at = datetime.now()
     try:
         dl_doc = extract_with_docling(doc, settings=settings, adapter=adapter)
+        # print(dl_doc)
         persisted = persist_docling_outputs(
             doc, dl_doc, settings=settings, docling_version=adapter.version
         )
@@ -651,7 +719,8 @@ def run_extraction_pipeline(
                 },
             }
         )
-        return doc.model_copy(update={"metadata": new_meta})
+        # return doc.model_copy(update={"metadata": new_meta})
+        return dl_doc
 
     except Exception:
         failed_at = datetime.now()

@@ -71,6 +71,50 @@ class FakeImageRef:
         return self._pil_image
 
 
+class FakePicture:
+    """Simulates a Docling picture item embedded inside a page.
+
+    Supports multiple image-resolution paths:
+
+    * ``img.pil_image`` (Path A — via ``picture.image.pil_image``).
+    * ``image.save(path)`` (Path B — via ``picture.image.save``).
+    * ``picture.save(path)`` (Path C).
+    * ``picture.get_image(doc)`` (Path D).
+    """
+
+    def __init__(
+        self,
+        pil_image: FakePilImage | None = None,
+        image_obj: Any | None = None,
+        save_direct: bool = False,
+        get_image_return: Any | None = None,
+    ) -> None:
+        self._pil_image = pil_image
+        self._image_obj = image_obj
+        self._save_direct = save_direct
+        self._get_image_return = get_image_return
+
+    @property
+    def image(self) -> Any | None:
+        """Return an object that may expose ``pil_image`` or ``save``."""
+        if self._image_obj is not None:
+            return self._image_obj
+        if self._pil_image is not None:
+            return FakeImageRef(pil_image=self._pil_image)
+        return None
+
+    def save(self, path: str | Path, **kwargs: Any) -> None:
+        """Direct save — Path C."""
+        if self._pil_image is not None:
+            self._pil_image.save(path, **kwargs)
+
+    def get_image(self, doc: Any, prov_index: int = 0) -> Any | None:
+        """Path D — return image from doc."""
+        if self._get_image_return is not None:
+            return self._get_image_return
+        return self._pil_image
+
+
 class FakePage:
     """Simulates a Docling ``PageItem``."""
 
@@ -79,14 +123,20 @@ class FakePage:
         page_num: int = 1,
         image_ref: FakeImageRef | None = None,
         save_fail: bool = False,
+        pictures: list[FakePicture] | None = None,
     ) -> None:
         self.page_num = page_num
         self._image_ref = image_ref
         self._save_fail = save_fail
+        self._pictures = pictures if pictures is not None else []
 
     @property
     def image(self) -> FakeImageRef | None:
         return self._image_ref
+
+    @property
+    def pictures(self) -> list[FakePicture]:
+        return self._pictures
 
 
 class FakeTable:
@@ -353,7 +403,7 @@ class TestPersistDoclingOutputs:
         self, sample_doc: DocumentSchema, settings: PipelineSettings
     ) -> None:
         """Persistence creates ``output.json``, ``output.md``, ``version.txt``
-        and the ``pages/``, ``tables/``, ``assets/`` directories."""
+        and the ``pages/``, ``tables/``, ``pictures/``, ``assets/`` dirs."""
         fake_doc = FakeDoclingDocument()
         outputs = persist_docling_outputs(sample_doc, fake_doc, settings=settings)
 
@@ -370,6 +420,8 @@ class TestPersistDoclingOutputs:
         assert outputs["pages"] == docling_dir / "pages"
         assert "tables" in outputs
         assert outputs["tables"] == docling_dir / "tables"
+        assert "pictures" in outputs
+        assert outputs["pictures"] == docling_dir / "pictures"
         assert "assets" in outputs
         assert outputs["assets"] == docling_dir / "assets"
 
@@ -379,6 +431,7 @@ class TestPersistDoclingOutputs:
         assert (docling_dir / "version.txt").is_file()
         assert (docling_dir / "pages").is_dir()
         assert (docling_dir / "tables").is_dir()
+        assert (docling_dir / "pictures").is_dir()
         assert (docling_dir / "assets").is_dir()
 
         # Verify content
@@ -426,21 +479,114 @@ class TestPersistDoclingOutputs:
         assert (tables_dir / "table_0.png").is_file()
         assert (tables_dir / "table_0.png").read_text() == "FAKE_IMAGE:RGB:80x30"
 
+    def test_picture_images_saved_via_pil_image(
+        self, sample_doc: DocumentSchema, settings: PipelineSettings
+    ) -> None:
+        """Picture images are saved via ``picture.image.pil_image`` (Path A)."""
+        pic_img_1 = FakePilImage("RGB", (32, 32))
+        pic_img_2 = FakePilImage("L", (16, 16))
+        pages = {
+            1: FakePage(
+                page_num=1,
+                pictures=[
+                    FakePicture(pil_image=pic_img_1),
+                ],
+            ),
+            2: FakePage(
+                page_num=2,
+                pictures=[
+                    FakePicture(pil_image=pic_img_2),
+                ],
+            ),
+        }
+        fake_doc = FakeDoclingDocument(pages=pages)
+        outputs = persist_docling_outputs(sample_doc, fake_doc, settings=settings)
+        pictures_dir = outputs["pictures"]
+
+        assert (pictures_dir / "picture_1_0.png").is_file()
+        assert (pictures_dir / "picture_2_0.png").is_file()
+        assert (pictures_dir / "picture_1_0.png").read_text() == "FAKE_IMAGE:RGB:32x32"
+        assert (pictures_dir / "picture_2_0.png").read_text() == "FAKE_IMAGE:L:16x16"
+
+    def test_picture_images_saved_via_direct_save(
+        self, sample_doc: DocumentSchema, settings: PipelineSettings
+    ) -> None:
+        """Picture images are saved via ``picture.save(path)`` (Path C)."""
+        pic_img = FakePilImage("RGB", (64, 64))
+        pages = {
+            1: FakePage(
+                page_num=1,
+                pictures=[FakePicture(pil_image=pic_img, save_direct=True)],
+            ),
+        }
+        fake_doc = FakeDoclingDocument(pages=pages)
+        outputs = persist_docling_outputs(sample_doc, fake_doc, settings=settings)
+        pictures_dir = outputs["pictures"]
+
+        assert (pictures_dir / "picture_1_0.png").is_file()
+        assert (pictures_dir / "picture_1_0.png").read_text() == "FAKE_IMAGE:RGB:64x64"
+
+    def test_picture_images_saved_via_get_image(
+        self, sample_doc: DocumentSchema, settings: PipelineSettings
+    ) -> None:
+        """Picture images are saved via ``picture.get_image(doc)`` (Path D)."""
+        pic_img = FakePilImage("RGB", (48, 48))
+        pages = {
+            1: FakePage(
+                page_num=1,
+                pictures=[FakePicture(get_image_return=pic_img)],
+            ),
+        }
+        fake_doc = FakeDoclingDocument(pages=pages)
+        outputs = persist_docling_outputs(sample_doc, fake_doc, settings=settings)
+        pictures_dir = outputs["pictures"]
+
+        assert (pictures_dir / "picture_1_0.png").is_file()
+        assert (pictures_dir / "picture_1_0.png").read_text() == "FAKE_IMAGE:RGB:48x48"
+
+    def test_picture_multiple_per_page(
+        self, sample_doc: DocumentSchema, settings: PipelineSettings
+    ) -> None:
+        """Multiple pictures on the same page get sequential indices."""
+        pic_img = FakePilImage("RGB", (10, 10))
+        pages = {
+            1: FakePage(
+                page_num=1,
+                pictures=[
+                    FakePicture(pil_image=pic_img),
+                    FakePicture(pil_image=pic_img),
+                    FakePicture(pil_image=pic_img),
+                ],
+            ),
+        }
+        fake_doc = FakeDoclingDocument(pages=pages)
+        outputs = persist_docling_outputs(sample_doc, fake_doc, settings=settings)
+        pictures_dir = outputs["pictures"]
+
+        for idx in range(3):
+            assert (pictures_dir / f"picture_1_{idx}.png").is_file()
+            assert (
+                pictures_dir / f"picture_1_{idx}.png"
+            ).read_text() == "FAKE_IMAGE:RGB:10x10"
+
     def test_no_images_still_succeeds(
         self, sample_doc: DocumentSchema, settings: PipelineSettings
     ) -> None:
-        """When no page or table images are present, persistence still
-        succeeds and directories exist."""
+        """When no page, table, or picture images are present, persistence
+        still succeeds and directories exist."""
         fake_doc = FakeDoclingDocument()
         outputs = persist_docling_outputs(sample_doc, fake_doc, settings=settings)
 
         pages_dir = outputs["pages"]
         tables_dir = outputs["tables"]
+        pictures_dir = outputs["pictures"]
         assert pages_dir.is_dir()
         assert tables_dir.is_dir()
+        assert pictures_dir.is_dir()
         # No image files
         assert len(list(pages_dir.iterdir())) == 0
         assert len(list(tables_dir.iterdir())) == 0
+        assert len(list(pictures_dir.iterdir())) == 0
 
     def test_no_tables_still_succeeds(
         self, sample_doc: DocumentSchema, settings: PipelineSettings
@@ -527,11 +673,12 @@ class TestRunExtractionPipeline:
         assert (docling_dir / "version.txt").is_file()
         assert (docling_dir / "pages").is_dir()
         assert (docling_dir / "tables").is_dir()
+        assert (docling_dir / "pictures").is_dir()
         assert (docling_dir / "assets").is_dir()
 
-    # ----------------------------------------------------------------
-    #  Failure path
-    # ----------------------------------------------------------------
+        # ----------------------------------------------------------------
+        #  Failure path
+        # ----------------------------------------------------------------
 
     def test_failure_updates_manifest(
         self,
