@@ -446,7 +446,7 @@ This ensures re-running the pipeline on the same input yields the same IDs, enab
 
 ### Sub-Task 7: Reconstruct Document Hierarchy and Assign Section Paths (R10)
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Analyze the normalized elements to reconstruct the document's hierarchical structure (Document → Page → Section → SubSection → Element), assign section paths (e.g., "1.2.3") to every element, and create `contains` relationships.
 - **Related Requirements:** R10 (Hierarchy Reconstruction)
 - **Dependencies and Preconditions:** Sub-Task 6 (normalization and element registry). Sub-Task 1 (schemas).

@@ -14,6 +14,8 @@ Public API
     from src.normalization import (
         DOCLING_TYPE_TO_INTERNAL_TYPE,
         ElementRegistry,
+        assign_section_paths,
+        build_hierarchy,
         normalize_document,
         preserve_proximity,
     )
@@ -25,10 +27,16 @@ from src.normalization.docling_normalizer import (
     normalize_document,
     preserve_proximity,
 )
+from src.normalization.hierarchy_builder import (
+    assign_section_paths,
+    build_hierarchy,
+)
 
 __all__: list[str] = [
     "DOCLING_TYPE_TO_INTERNAL_TYPE",
     "ElementRegistry",
+    "assign_section_paths",
+    "build_hierarchy",
     "normalize_document",
     "preserve_proximity",
 ]
