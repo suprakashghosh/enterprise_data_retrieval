@@ -95,6 +95,21 @@ class DoclingAdapter:
             if hasattr(tso, "mode"):
                 tso.mode = TableFormerMode.ACCURATE
 
+        layout_options= getattr(pipeline_opts, "layout_options", None)
+        if layout_options is not None:
+            if hasattr(layout_options, "model_spec"):
+                from docling.datamodel.layout_model_specs import (
+                    DOCLING_LAYOUT_EGRET_LARGE,
+                    DOCLING_LAYOUT_EGRET_MEDIUM,
+                    DOCLING_LAYOUT_EGRET_XLARGE,
+                    DOCLING_LAYOUT_HERON,
+                    DOCLING_LAYOUT_HERON_101,
+                    DOCLING_LAYOUT_V2,
+                    LayoutModelConfig,
+                )
+                layout_options.model_spec = DOCLING_LAYOUT_EGRET_XLARGE
+
+
         # Enable image generation for pages and tables if the API supports it
         if hasattr(pipeline_opts, "generate_page_images"):
             pipeline_opts.generate_page_images = True
@@ -106,8 +121,10 @@ class DoclingAdapter:
             pipeline_opts.do_formula_enrichment = True
         if hasattr(pipeline_opts, "do_code_enrichment"):
             pipeline_opts.do_code_enrichment = True
+        if hasattr(pipeline_opts, "images_scale"):
+            pipeline_opts.images_scale = 2.0
         if hasattr(pipeline_opts, "code_formula_options"):
-            preset_name= 'default' #preset_name: Name of the preset to use ('codeformulav2' or 'granite_docling')
+            preset_name= 'codeformulav2' #preset_name: Name of the preset to use ('codeformulav2' or 'granite_docling')
             code_formula_options = CodeFormulaVlmOptions.from_preset(preset_name)
             pipeline_opts.code_formula_options = code_formula_options
 
@@ -595,7 +612,7 @@ def run_extraction_pipeline(
     settings: PipelineSettings | None = None,
     adapter: DoclingAdapter | None = None,
     force: bool = True,
-) -> DocumentSchema:
+) -> tuple[Any, DocumentSchema]:
     """Orchestrate Docling extraction and output persistence for *doc*.
 
     Steps
@@ -670,7 +687,7 @@ def run_extraction_pipeline(
                     },
                 }
             )
-            return doc.model_copy(update={"metadata": new_meta})
+            return "skipped", doc.model_copy(update={"metadata": new_meta})
 
     # ------------------------------------------------------------------
     #  Extract
@@ -719,8 +736,8 @@ def run_extraction_pipeline(
                 },
             }
         )
-        # return doc.model_copy(update={"metadata": new_meta})
-        return dl_doc
+        return dl_doc, doc.model_copy(update={"metadata": new_meta})
+        # return dl_doc
 
     except Exception:
         failed_at = datetime.now()

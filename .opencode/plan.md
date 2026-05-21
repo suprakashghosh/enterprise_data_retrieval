@@ -599,7 +599,7 @@ This ensures re-running the pipeline on the same input yields the same IDs, enab
 
 ### Sub-Task 10: Process Formulas and Link to Explanatory Text (R13)
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Extract formulas from Docling output, classify them (inline vs. display), convert to LaTeX/symbolic representation, and link to surrounding explanatory text.
 - **Related Requirements:** R13 (Formula Processing)
 - **Dependencies and Preconditions:** Sub-Task 6 (normalized elements with FormulaSchema). Docling must extract formula items.
@@ -650,7 +650,7 @@ This ensures re-running the pipeline on the same input yields the same IDs, enab
 
 ### Sub-Task 11: Define and Generate Relationship Metadata (R14)
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Implement the full relationship generation engine that creates all typed relationships between elements as defined in the Core Concepts table.
 - **Related Requirements:** R14 (Relationship Metadata)
 - **Dependencies and Preconditions:** Sub-Tasks 6-10 (all element types processed, captions linked, hierarchy built, spatial proximity computed). Sub-Task 1 (RelationshipSchema).

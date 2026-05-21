@@ -984,7 +984,24 @@ class ElementRegistry:
         self._by_type: Dict[str, List[ElementSchema]] = {}
 
     def add(self, element: ElementSchema) -> None:
-        """Register *element* in the registry."""
+        """Register *element* in the registry.
+
+        If an element with the same ID already exists it is replaced
+        (the old entry is removed from page/type lists first) so that
+        callers never observe duplicate entries for the same ID.
+        """
+        old = self._by_id.get(element.element_id)
+        if old is not None:
+            page_list = self._by_page.get(old.page_num, [])
+            try:
+                page_list.remove(old)
+            except ValueError:
+                pass
+            type_list = self._by_type.get(old.element_type, [])
+            try:
+                type_list.remove(old)
+            except ValueError:
+                pass
         self._by_id[element.element_id] = element
         self._by_page.setdefault(element.page_num, []).append(element)
         self._by_type.setdefault(element.element_type, []).append(element)
@@ -1160,6 +1177,7 @@ def normalize_document(
 
             # Normalize bbox
             bbox = _to_normalized_bbox(bbox_tuple, page_dim)
+            # print(item)
 
             # Create element
             try:
