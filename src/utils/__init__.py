@@ -1,8 +1,8 @@
 """
-``src.utils`` — Shared logging, configuration, and file I/O utilities.
-
-Contains helpers that are used across all pipeline stages without
-introducing circular dependencies.
+``src.utils`` — Shared logging, configuration, file I/O utilities, and
+caption extraction.
 """
 
-__all__: list[str] = []
+from src.utils.caption_extractor import extract_caption_label  # noqa: F401
+
+__all__: list[str] = ["extract_caption_label"]
