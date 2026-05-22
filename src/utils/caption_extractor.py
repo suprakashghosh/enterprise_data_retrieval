@@ -227,5 +227,17 @@ def _normalise_number(raw_number: str) -> str:
     n = re.sub(r"\s+", " ", n)
     return n
 
-test= "Table 3.2.1- Deeply nested"
-print(extract_caption_label(test))
+if __name__=='__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Extract caption label from caption text.')
+    parser.add_argument('caption', nargs='+', help='Caption text to parse')
+    args = parser.parse_args()
+    caption_text = ' '.join(args.caption)
+    result = extract_caption_label(caption_text)
+    if result:
+        print(f'{result[0]}: {result[1]}')
+    else:
+        print('No caption label found.')
+    # test= "Table 3.2.1- Deeply nested"
+    # print(extract_caption_label(test))
