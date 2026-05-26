@@ -11,7 +11,7 @@ document types whose captions follow the common pattern::
 from __future__ import annotations
 
 import re
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Curated canonical image types and their normalised forms
@@ -117,21 +117,6 @@ _SEP_RE = re.compile(
 )
 
 # ---------------------------------------------------------------------------
-# Separators
-# ---------------------------------------------------------------------------
-_SEPS = r"[:\u202F\u00A0;·•,\u2013\u2014\u2012\-—|)]"
-
-# Full separator regex — matches the separator plus any trailing whitespace.
-_SEP_RE = re.compile(
-    rf"\s*{_SEPS}+\s*"
-    r"|\s{2,}"  # two or more spaces when no explicit separator
-    r"|\s+(?=[A-Z])"  # whitespace then capital letter (implicit separator)
-    r"|(?<=\d)(?=[A-Z])"  # digit directly followed by capital letter
-    r"|$",  # end of string (no explanatory text)
-    re.UNICODE,
-)
-
-# ---------------------------------------------------------------------------
 # Build the type-matching regex (sorted longest-first so "algorithm"
 # matches before "algo", "figure" before "fig", etc.)
 # ---------------------------------------------------------------------------
@@ -152,6 +137,21 @@ _CAPTION_RE = re.compile(
     re.IGNORECASE | re.UNICODE,
 )
 
+# Un-anchored variant for finding references anywhere in text (no ``^``).
+# Identical to ``_CAPTION_RE`` except the ``^`` anchor is removed so that
+# ``re.finditer`` can locate matches at any position.
+_FIND_RE = re.compile(
+    rf"\b(?P<type>{_TYPE_ALTERNATION})"  # image type (case-insensitive)
+    rf"(?:\s+\.?\s*|\.\s*)"  # separator: at least one space (optionally with dot) or a dot
+    rf"(?P<number>"
+    rf"{_LETTERED}(?:{_RANGE_TAIL_LETTERED})?"  # 1a, 1a-b, 2B-3C
+    rf"|{_ROMAN}(?:{_RANGE_TAIL_ROMAN})?"  # I, II, XI, XI–XII
+    rf"|{_HIER_NUM}(?:{_RANGE_TAIL})?"  # 1, 1.1, 1-2, 1.1–2.3
+    rf"|{_LETTER}"  # A, B, C (standalone)
+    rf")",
+    re.IGNORECASE | re.UNICODE,
+)
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -159,8 +159,10 @@ _CAPTION_RE = re.compile(
 def extract_caption_label(text: str) -> Optional[str]:
     """Extract the image-type label and number from a caption *text*.
 
-    Returns ``(normalized_type, number_string)`` on success, or ``None`` if
-    the text does not appear to be a valid caption label.
+    Returns a normalised label string on success, or ``None`` if the
+    text does not appear to be a valid caption label. The label uses
+    the **canonical** type name so that "Fig. 1" and "Figure 1" both
+    produce ``"figure 1"``.
 
     Parameters
     ----------
@@ -169,8 +171,8 @@ def extract_caption_label(text: str) -> Optional[str]:
 
     Returns
     -------
-    tuple[str, str] or None
-        ``("figure", "1")`` for ``"Figure 1: Revenue …"``, or ``None``.
+    str or None
+        ``"figure 1"`` for ``"Figure 1: Revenue …"``, or ``None``.
     """
     if not text or not text.strip():
         return None
@@ -184,23 +186,53 @@ def extract_caption_label(text: str) -> Optional[str]:
     raw_type = m.group("type").lower()
     raw_number = _normalise_number(m.group("number"))
 
-    # Validate the extracted type against the curated list (after stripping
-    # trailing dot so "fig." and "fig" both work).
     canonical = VALID_IMAGE_TYPES.get(raw_type)
-    if canonical is None:
-        # The raw type matched our regex alternation, but after stripping
-        # the dot it may no longer be in the dict (edge case with mixed
-        # abbreviations).  Re-check directly.
-        canonical = VALID_IMAGE_TYPES.get(
-            raw_type + ".", VALID_IMAGE_TYPES.get(raw_type)
-        )
-
     if canonical is None:
         return None
 
-    # return (canonical, raw_number)
-    # return (raw_type, raw_number)
-    return f"{raw_type} {raw_number}"
+    return f"{canonical} {raw_number}"
+
+
+def find_all_caption_refs(text: str) -> List[str]:
+    """Find all caption references anywhere in the string.
+
+    Scans the full text for patterns like "see Figure 3", "Table IV",
+    "as shown in Fig. 1" etc.  Uses the same regex and normalization
+    logic as :func:`extract_caption_label` but with ``finditer`` instead
+    of ``match``, so matches are found at any position in the text.
+
+    Parameters
+    ----------
+    text:
+        Arbitrary text which may contain zero or more references.
+
+    Returns
+    -------
+    list[str]
+        Normalised labels such as ``["figure 1", "table IV"]``, deduplicated
+        and in the order of first appearance.
+    """
+    if not text:
+        return []
+
+    cleaned = _normalise_unicode(text)
+    results: List[str] = []
+    seen: set[str] = set()
+
+    for m in _FIND_RE.finditer(cleaned):
+        raw_type = m.group("type").lower()
+        raw_number = _normalise_number(m.group("number"))
+
+        canonical = VALID_IMAGE_TYPES.get(raw_type)
+        if canonical is None:
+            continue
+
+        label = f"{canonical} {raw_number}"
+        if label not in seen:
+            seen.add(label)
+            results.append(label)
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -228,17 +260,19 @@ def _normalise_number(raw_number: str) -> str:
     n = re.sub(r"\s+", " ", n)
     return n
 
-if __name__=='__main__':
+
+if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='Extract caption label from caption text.')
-    parser.add_argument('caption', nargs='+', help='Caption text to parse')
+    parser = argparse.ArgumentParser(
+        description="Extract caption label from caption text."
+    )
+    parser.add_argument("caption", nargs="+", help="Caption text to parse")
     args = parser.parse_args()
-    caption_text = ' '.join(args.caption)
-    result = extract_caption_label(caption_text)
-    if result:
-        print(f'{result[0]}: {result[1]}')
+    caption_text = " ".join(args.caption)
+    # label = extract_caption_label(caption_text)
+    label= find_all_caption_refs(caption_text)
+    if label:
+        print(label)
     else:
-        print('No caption label found.')
-    # test= "Table 3.2.1- Deeply nested"
-    # print(extract_caption_label(test))
+        print("No caption label found.")

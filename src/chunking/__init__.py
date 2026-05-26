@@ -26,6 +26,7 @@ from src.chunking.visual_enricher import (
     enrich_visual_chunks,
     generate_all_image_descriptions,
 )
+from src.chunking.cross_reference_resolver import resolve_cross_references
 
 __all__ = [
     "ChunkMetadata",
@@ -36,4 +37,5 @@ __all__ = [
     "extract_chunk_metadata",
     "enrich_visual_chunks",
     "generate_all_image_descriptions",
+    "resolve_cross_references",
 ]

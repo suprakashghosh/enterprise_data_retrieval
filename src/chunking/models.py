@@ -163,8 +163,9 @@ class ChunkMetadata(BaseModel):
     caption_number: List[str] = Field(
         default_factory=list,
         description=(
-            "Extracted figure/table numbers from captions (parallel with image_type). "
-            "E.g. ['3.2', '1a', 'IV'].  Populated via ``extract_caption_label()``. "
+            "Normalised caption labels for each visual element (parallel with image_type). "
+            "E.g. ['figure 3.2', 'figure 1a', 'table IV'].  "
+            "Populated via ``extract_caption_label()``.  "
             "Enables exact-match retrieval ('show me Figure 3.2')."
         ),
     )

@@ -160,9 +160,17 @@ with (output_dir / f"{doc_filename}.doctags").open("w", encoding="utf-8") as fp:
 
 
 # from src.chunking.visual_enricher import enrich_visual_chunks
+from src.chunking.cross_reference_resolver import resolve_cross_references
+
 # %load_ext autoreload
 # %autoreload 2
-chunks_metadata= build_chunk_metadata_list(conv_result= conv_result, output_dir= output_dir)
+chunk_metadatas, text_lookup, pic_table_lookup= build_chunk_metadata_list(conv_result= conv_result, output_dir= output_dir)
+chunk_metadatas_with_refers_to= resolve_cross_references(chunk_metadatas=chunk_metadatas,
+                                                        pic_table_lookup= pic_table_lookup,
+                                                        text_lookup= text_lookup,
+                                                        document_name= conv_result.document.origin.filename,
+                                                        output_dir= output_dir)
+
 
 
 

@@ -287,10 +287,12 @@ def build_chunk_metadata_list(
     max_tokens: int = 300,
     merge_peers: bool = True,
     output_dir: Optional[Path] = None,
-) -> List[ChunkMetadata]:
+) -> tuple[List[ChunkMetadata], Dict[str, str], Dict[str, Any]]:
     """Chunk a Docling document and return metadata for every chunk.
 
-    This is the primary entry point for the chunking stage.
+    This is the primary entry point for the chunking stage. It produces text
+    chunks via the HybridChunker and then enriches them with metadata for
+    visual elements (pictures/tables) to create a complete list of chunks.
 
     Args:
         conv_result: A Docling ``ConversionResult`` (has ``.document``).
@@ -301,9 +303,11 @@ def build_chunk_metadata_list(
             as ``{stem}_chunks.json`` and ``{stem}_chunks_metadata.json``.
 
     Returns:
-        List of ``ChunkMetadata`` — one per text chunk produced by ``HybridChunker``.
-        Visual chunks (image / textual_description) are NOT included here;
-        call :func:`src.chunking.visual_enricher.enrich_visual_chunks` afterwards.
+        List of ``ChunkMetadata`` for all chunks (text and visual) produced
+        by the chunking process.
+        The text lookup dictionary {text_ref: text}
+        The picture object lookup dictionary {picture_ref: picture_object}
+
     """
     dl_doc = conv_result.document
     document_name = dl_doc.origin.filename
@@ -367,4 +371,4 @@ def build_chunk_metadata_list(
 
         _log.info("Exported chunk files to %s", output_dir)
 
-    return chunk_metadatas
+    return chunk_metadatas, text_lookup, pic_table_lookup

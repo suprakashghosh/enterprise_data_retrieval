@@ -36,32 +36,12 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from src.chunking._caption_utils import get_caption_for_item
 from src.chunking.models import ChunkMetadata, make_chunk_id
 from src.utils.caption_extractor import extract_caption_label
 from src.utils.instructor_api_response import get_llm_response_from_instructor
 
 _log = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Helper — caption extraction
-# ---------------------------------------------------------------------------
-
-
-def _get_caption_for_item(item: Any, text_lookup: Dict[str, str]) -> str:
-    """Extract the caption text for a picture or table Docling item."""
-    captions = getattr(item, "captions", None)
-    children = getattr(item, "children", None)
-
-    cref: Optional[str] = None
-    if captions:
-        cref = getattr(captions[0], "cref", None)
-    elif children:
-        cref = getattr(children[0], "cref", None)
-
-    if cref:
-        return text_lookup.get(cref, "")
-    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +132,7 @@ async def generate_all_image_descriptions(
 
     coros = []
     for ref, item in pic_table_lookup.items():
-        caption = _get_caption_for_item(item, text_lookup)
+        caption = get_caption_for_item(item, text_lookup)
         uri = str(getattr(getattr(item, "image", None), "uri", None))
         if uri and caption:
             coros.append(_describe_image_async(uri, caption, semaphore))
@@ -245,7 +225,7 @@ def enrich_visual_chunks(
             continue  # unknown visual type — skip
 
         image_uri = str(getattr(getattr(item, "image", None), "uri", None))
-        caption_text = _get_caption_for_item(item, text_lookup)
+        caption_text = get_caption_for_item(item, text_lookup)
 
         # Caption number extraction
         caption_number: Optional[str] = None

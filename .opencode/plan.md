@@ -523,7 +523,7 @@ See ``src/chunking/models.py::make_chunk_id()`` for the exact implementation.
 
 ### Sub-Task 9: Implement Cross-Reference Resolution (R11)
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Scan chunk text for "see Figure 3", "Table IV", "as shown in Fig. 1" patterns and populate ``refers_to`` fields by matching references against a caption index built from the raw Docling picture/table items.
 - **Related Requirements:** R11 (Cross-Reference Resolution)
 - **Dependencies and Preconditions:** Sub-Task 8 (all chunks created, ``pic_table_lookup`` available).  Sub-Task 6 (ChunkMetadata model).  ``extract_caption_label()`` from ``src/utils/caption_extractor.py``.
