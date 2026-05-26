@@ -87,6 +87,7 @@ class DoclingAdapter:
         pipeline_opts = PdfPipelineOptions()
         pipeline_opts.do_table_structure = True
 
+
         # Defensive — API may differ across Docling versions
         tso = getattr(pipeline_opts, "table_structure_options", None)
         if tso is not None:

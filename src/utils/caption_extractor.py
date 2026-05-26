@@ -156,7 +156,7 @@ _CAPTION_RE = re.compile(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-def extract_caption_label(text: str) -> Optional[Tuple[str, str]]:
+def extract_caption_label(text: str) -> Optional[str]:
     """Extract the image-type label and number from a caption *text*.
 
     Returns ``(normalized_type, number_string)`` on success, or ``None`` if
@@ -199,7 +199,8 @@ def extract_caption_label(text: str) -> Optional[Tuple[str, str]]:
         return None
 
     # return (canonical, raw_number)
-    return (raw_type, raw_number)
+    # return (raw_type, raw_number)
+    return f"{raw_type} {raw_number}"
 
 
 # ---------------------------------------------------------------------------

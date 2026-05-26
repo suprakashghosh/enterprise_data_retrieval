@@ -7,38 +7,36 @@ Build a production-grade extraction and structured chunking pipeline that ingest
 ## Requirements Snapshot
 
 - **R1 (Docling Extraction):** Use Docling as the primary extraction engine. Convert PDFs into Docling document format with full layout, table structure, OCR, and page-level detail.
-- **R2 (Internal Schema):** Define and implement target schemas/data models for Document, Page, Section, Element (Paragraph/TextBlock, Table, Image, Chart, Graph, Formula), Chunk, Relationship, and Metadata.
-- **R3 (ID Strategy):** Define a stable, deterministic ID strategy for documents, elements, and chunks enabling cross-referencing and idempotent reprocessing.
-- **R4 (Project Structure):** Establish modular project structure with separate packages for ingestion, extraction, normalization, metadata, chunking, schemas, validation, and utilities.
+- **R2 (Internal Schema):** Define and implement target schemas/data models for Document and Page (minimal — ingestion only) and ChunkMetadata (the retrieval-layer model). Use Docling's native models for extraction; no custom element registry.
+- **R3 (ID Strategy):** Define deterministic UUIDv5 IDs for documents and chunks enabling cross-referencing and idempotent reprocessing.
+- **R4 (Project Structure):** Establish modular project structure with separate packages for ingestion, extraction, chunking, schemas, validation, retrieval, and utilities.
 - **R5 (Raw Document Storage):** Implement ingestion that stores raw PDFs immutably and associates them with a document record.
 - **R6 (Docling Output Persistence):** Persist raw Docling outputs (JSON, markdown, page images, table images) alongside the document record for audit and re-processing.
 - **R7 (Output Validation):** Validate Docling outputs for completeness, correct page counts, non-empty content, and structural consistency.
-- **R8 (Normalization & Registry):** Normalize Docling's output into internal element objects and create an element registry (a lookup by element ID).
-- **R9 (Positional & Structural Preservation):** Preserve page numbers, bounding boxes, reading order, section assignments, captions, and layout proximity for every element.
-- **R10 (Hierarchy Reconstruction):** Reconstruct document hierarchy (Document → Page → Section → Element) and assign hierarchical section paths (e.g., "3.2.1") to all elements.
-- **R11 (Table Processing):** Process tables into multiple representations (markdown, HTML, JSON, plain-text summary), extract table metadata (row count, column count, headers), and handle multi-page/spanned tables.
-- **R12 (Image/Chart/Graph Processing):** Extract and save image/chart/graph assets, classify visual type (chart vs. diagram vs. photograph), prepare metadata, and set up extensibility for future vision-language descriptions.
-- **R13 (Formula Processing):** Extract formulas (LaTeX or symbolic), classify inline vs. display formulas, and link to surrounding explanatory text.
-- **R14 (Relationship Metadata):** Define and generate typed relationships (contains, belongs_to, relates_to, refers_to, describes, follows, precedes, explains, supports, has_caption, nearby, same_section_as) between elements.
-- **R15 (Chunking):** Implement hierarchical chunking (by section boundary), semantic chunking (by semantic similarity), and cluster-semantic grouping (via embeddings + clustering). Integrate tables/images/charts/formulas into chunks via references and summaries rather than flattening to plain text alone.
-- **R16 (Exports):** Export final artifacts: chunks JSONL/Parquet, elements JSONL, relationships JSONL, metadata JSON, and human-readable review reports (HTML or Markdown).
-- **R17 (Validation & Benchmarks):** Add validation/evaluation checks for chunk quality, element coverage, relationship fidelity, and define sample benchmark documents for regression testing.
-- **R18 (Out of Scope — Downstream):** Graph database creation/loading, vector database indexing, hybrid retrieval, query decomposition/expansion, graph-based context expansion, answer generation, and agentic reasoning productionization are explicitly out of scope for this plan.
+- **R8 (ChunkMetadata Model):** Define ``ChunkMetadata`` — the single source of truth for every chunk. Must carry identity (ID, document hash), structural fields (page numbers, section path, chunk types), visual-element fields (image_uri, caption_text, caption_number), embedding-type dispatch (text / image / textual_description), graph-linking fields (element_self_refs, refers_to, relates_to), and quality signals (token_count). The model is frozen and Pydantic v2.
+- **R9 (Docling HybridChunker Wrapper):** Wrap Docling's built-in ``HybridChunker``. Extract all metadata fields directly from ``DocChunk.meta`` — page numbers from provenance, section headings, element labels, captions, and element self_refs. No intermediate normalization step.
+- **R10 (Visual Element Enrichment):** For every picture and table in the document, generate two additional chunks: one with ``embedding_type="image"`` (the image itself is embedded; caption stored for reference), and one with ``embedding_type="textual_description"`` (an LLM-generated textual description is embedded). LLM calls must be concurrent via ``asyncio.gather`` + semaphore.
+- **R11 (Cross-Reference Resolution):** Scan chunk text for patterns like "see Figure 3", "Table IV", "Eq. 5". Resolve to target chunk IDs via ``caption_number`` matching and populate ``refers_to`` fields. Creates the foundation for graph-DB ``refers_to`` edges.
+- **R12 (Multimodal Batch Embedding):** Build ``items_to_encode`` from chunk metadata (dispatched by ``embedding_type``). Embed text chunks, image URIs, and textual descriptions using a multimodal embedding model (e.g., ``Qwen/Qwen3-VL-Embedding-2B`` or similar). Store embeddings alongside metadata.
+- **R12b (Relates-to via Top-k Similarity):** For each chunk, compute top-k most similar chunks by cosine similarity on embeddings and populate ``relates_to``. Sparse edges only (top_k=3), with a minimum similarity threshold (0.75) to filter noise. Sibling chunks (same element_self_refs) are excluded — a visual chunk should not "relate to" its own textual-description variant. Pure numpy, no external clustering dependencies. Chunks below threshold get empty ``relates_to``.
+- **R13 (Weaviate Vector DB Integration):** Load chunks and their embeddings into Weaviate. All filterable fields (page_numbers, section_path, caption_number, token_count, chunk_types) must be stored as Weaviate properties for hybrid (vector + filter) retrieval.
+- **R14 (Graph DB Construction):** Build a graph from chunk metadata: document nodes, chunk nodes, section nodes. Create edges for sequential order (``follows``), section membership (``belongs_to``), cross-references (``refers_to``), and semantic relatedness (``relates_to``). Load into Neo4j or Apache AGE.
+- **R15 (Pipeline Orchestrator, Export & Validation):** Chain all stages into a single callable entry point. Export chunk metadata as JSON/JSONL. Add validation checks for chunk coverage, ID uniqueness, and embedding completeness.
+- **R16 (Out of Scope — Retrieval / RAG):** Hybrid retrieval, query decomposition, graph-based context expansion, answer generation, and agentic reasoning are explicitly out of scope for this plan.
 
 ## Scope
 
-- Building the entire extraction-to-chunks pipeline: ingestion, Docling conversion, output persistence, validation, normalization, hierarchy reconstruction, element typing, relationship metadata generation, chunking (hierarchical, semantic, cluster-semantic), and export.
-- Defining all internal data models (Pydantic) in a `schemas/` module.
-- Modularizing into `ingestion/`, `extraction/`, `normalization/`, `metadata/`, `chunking/`, `schemas/`, `validation/`, and `utils/` packages under `src/`.
+- Building the ingestion-to-retrieval pipeline: ingestion, Docling conversion, output persistence, validation, HybridChunker wrapper with metadata extraction, visual enrichment (LLM image descriptions), cross-reference resolution, batch multimodal embedding, Weaviate vector DB loading, and graph DB construction.
+- Defining the ``ChunkMetadata`` model (Pydantic v2) in ``src/chunking/models.py`` — the single source of truth for every chunk.  Legacy schemas in ``src/schemas/`` are retained but not extended.
+- Modularizing into ``ingestion/``, ``extraction/``, ``chunking/``, ``retrieval/``, ``validation/``, ``schemas/``, and ``utils/`` packages under ``src/``.
 - Handling PDF documents with Docling; no other input formats in this phase.
-- Supporting all document element types: text, tables, images, charts, graphs, formulas, captions, footnotes, headers/footers, lists.
-- Generating human-readable review reports for debugging and quality inspection.
-- Creating sample benchmark documents and automated validation tests.
+- Supporting all document element types: text, tables, images — captured naturally by Docling chunks.
+- No separate formula or code handling; these are captured within Docling's chunk boundaries.
 
 ## Assumptions and Constraints
 
 - **Python 3.10+** is the target runtime; all implementation must be compatible.
-- **Docling** (the `docling` PyPI package) is the extraction engine. Assume Docling version 2.x or later with `DocumentConverter`, `HybridChunker`, and the Docling document model available. The existing notebook `1_PDF_data_extraction.ipynb` shows a working Docling integration pattern.
+- **Docling** (the `docling` PyPI package) is the extraction and chunking engine.  ``HybridChunker`` is used directly — no custom chunking strategies.  Docling version 2.x or later required.
 - **GPU is not required** but acceleration (CUDA) should be leveraged when available for layout analysis and embedding-based chunking.
 - The project currently has no test infrastructure; tests must be introduced alongside the implementation (pytest).
 - All modules should be importable without a running GPU or external service; graceful fallbacks where sensible.
@@ -49,15 +47,13 @@ Build a production-grade extraction and structured chunking pipeline that ingest
 
 ## Risks and Areas Requiring Care
 
-- **Docling API volatility:** Docling is under active development. Pin the `docling` version in `requirements.txt` and isolate Docling interactions behind a thin adapter/abstraction layer so internal models do not leak.
-- **Large documents:** Financial reports can be 300+ pages with hundreds of tables and figures. Ensure all processing is streaming or page-batched to avoid OOM. Use iterators for chunk output rather than loading everything in memory.
-- **Multi-page table spanning:** A single logical table may span multiple pages. Docling may split them. The normalization step must attempt to re-merge or at least link split table parts.
-- **Broken PDFs / OCR failures:** PDFs may be scanned images, have corrupted streams, or mixed content. Docling may produce incomplete output. Validation (R7) must catch these cases and report clearly rather than crashing.
-- **Formula extraction quality:** Docling's formula extraction may be incomplete. The plan must accommodate fallback LaTeX or symbolic representation and not assume perfect extraction.
-- **ID determinism and idempotency:** If a pipeline step is re-run on the same input, it should produce the same IDs. This requires content-hash-based or deterministic UUID strategies.
-- **Chunk boundary quality:** Poorly chosen chunk boundaries can break relationships. The chunking step must not split a table away from its caption, or a paragraph from its footnotes.
-- **Circular or duplicate relationships:** Relationship generation must avoid self-referencing edges and deduplicate structural links (e.g., same `follows` edge between identical element pairs).
-- **No downstream consumers defined yet:** The schema and export formats must be designed for extensibility but not over-engineered. Keep it simple; downstream graph and vector stages can adapt later.
+- **Docling API volatility:** Docling is under active development. Pin the `docling` version in `pyproject.toml` and isolate Docling interactions behind thin adapter/wrapper functions.
+- **Large documents:** Documents can be 300+ pages with hundreds of figures. The chunking pipeline must not load all page images or chunk JSON into memory simultaneously.
+- **Multi-page table spanning:** Docling's ``HybridChunker`` may split or merge spanning tables unpredictably.  The metadata extraction should record which pages a chunk touches (``page_numbers``) but not attempt to re-merge.
+- **Broken PDFs / OCR failures:** PDFs may be scanned images with corrupted streams. Docling may produce incomplete output. Validation (R7) must catch these cases.
+- **ID determinism:** Chunk IDs must be identical across re-runs for the same document + chunker parameters.  Use UUIDv5 with ``document_hash`` + ``sequence_number`` + ``chunk_types`` — do NOT include ``chunk_text`` in the ID.
+- **LLM API failures:** The instructor API for image descriptions may be rate-limited or unavailable.  ``asyncio.gather(return_exceptions=True)`` ensures one failure doesn't halt all descriptions.
+- **False-positive cross-references:** Pattern matching for "see Figure 3" may match non-reference mentions.  Require both a type keyword AND a number after extraction; skip when no target chunk is found.
 
 ## Core Concepts
 
@@ -70,54 +66,50 @@ PDF (raw bytes)
   │  [Docling conversion]
   ▼
 DoclingDocument (Docling's native representation)
-  │  [Normalization]
+  │  [HybridChunker]
   ▼
-InternalDocument (our Pydantic schema)
-  ├── Document metadata (title, source path, hash, timestamps)
-  ├── Pages[] (page number, dimensions, relationships)
-  │     └── Elements[] (typed: TextBlock, Table, Image, Chart, Formula, etc.)
-  │           ├── BoundingBox, reading_order, section_path
-  │           ├── content (text, markdown, asset_ref)
-  │           └── relationships[] (target_id, type, metadata)
-  └── Relationships[] (element-to-element graph edges)
-  │  [Chunking]
+DocChunk[] (Docling chunk objects with meta.headings, meta.doc_items, etc.)
+  │  [Metadata extraction]
   ▼
-Chunk[] (typed for content type)
-  ├── content (text with element references like {{ELEM:UUID}})
-  ├── element_refs[] (list of element UUIDs included)
-  ├── chunk_type (hierarchical / semantic / cluster)
-  ├── section_path, page_range, metadata
-  └── relationships[]
+ChunkMetadata[] (our Pydantic model — single source of truth)
+  │
+  ├── Text chunks:          embedding_type = "text"
+  ├── Image chunks:         embedding_type = "image"          (picture/table visual)
+  └── Description chunks:   embedding_type = "textual_description"  (LLM output)
+  │
+  ├── [Cross-reference resolver]  → populates refers_to[]
+  ├── [Batch embedding]          → vectors stored in Weaviate
+  └── [Graph construction]       → nodes + edges in Neo4j / AGE
 ```
 
 ### ID Strategy
 
-Each document, element, and chunk gets a deterministic UUIDv5 generated from stable inputs:
+Each document and chunk gets a deterministic UUIDv5 generated from stable inputs:
 
 | Entity | UUID Namespace | Input to Hash |
 |--------|---------------|----------------|
 | Document | `docling-project-doc` | SHA256 of raw file content |
-| Element | `docling-project-elem` | `{doc_id}:{page_num}:{reading_order}:{element_type}` |
-| Chunk | `docling-project-chunk` | `{doc_id}:{chunk_type}:{section_path}:{element_count}` |
+| Chunk | `docling-project-chunk` | `{document_hash}\|{sequence_number:06d}\|{sorted_chunk_types}` |
 
-This ensures re-running the pipeline on the same input yields the same IDs, enabling idempotent incremental processing.
+See ``src/chunking/models.py::make_chunk_id()`` for the exact implementation.
 
-### Relationship Types
+### Chunk Embedding Types
+
+| embedding_type | What is embedded | chunk_text stores |
+|---|---|---|
+| ``"text"`` | ``chunk_text`` (raw document content) | The text |
+| ``"image"`` | ``image_uri`` (image bytes via multimodal encoder) | Caption — for reference / display only |
+| ``"textual_description"`` | ``chunk_text`` (LLM-generated description) | The description |
+
+### Relationship Types (for Graph DB)
 
 | Relationship | Direction | Meaning |
 |-------------|-----------|---------|
-| `contains` | parent → child | Structural containment (Document contains Page, Section contains Element) |
-| `belongs_to` | child → parent | Inverse of contains |
-| `follows` | A → B | A appears immediately after B in reading order |
-| `precedes` | A → B | A appears immediately before B |
-| `refers_to` | A → B | Element A references element B (e.g., "see Table 3") |
-| `relates_to` | A ↔ B | General semantic relatedness (undirected in data, stored as symmetric) |
-| `describes` | A → B | Text element A describes visual element B (chart/image) |
-| `explains` | A → B | Text element A explains formula B |
-| `supports` | A → B | Element A provides supporting data for element B |
-| `has_caption` | visual → text | The visual element has a caption text element |
-| `nearby` | A ↔ B | Elements are spatially proximate (same page, within threshold distance) |
-| `same_section_as` | A ↔ B | Elements share the same section path |
+| ``follows`` | A → B | A appears immediately before B in reading order |
+| ``belongs_to`` | chunk → section | The chunk belongs to a given section path |
+| ``refers_to`` | A → B | Chunk A references chunk B (e.g., "see Figure 3") |
+| ``relates_to`` | A ↔ B | General semantic / structural relatedness |
+| ``same_section_as`` | A ↔ B | Chunks share the same section path |
 
 ## Sub-Tasks
 
@@ -383,733 +375,410 @@ This ensures re-running the pipeline on the same input yields the same IDs, enab
 
 ---
 
-### Sub-Task 6: Normalize Docling Output into Internal Objects and Create Element Registry (R8, R9)
+### Sub-Task 6: Define ChunkMetadata Model and Chunk ID Strategy (R2, R3, R8)
 
 - **Status:** Completed
-- **Objective:** Convert the raw Docling document into the project's internal `DocumentSchema` with all typed elements, preserving page numbers, bounding boxes, reading order, section assignments, captions, and layout proximity.
-- **Related Requirements:** R8 (Normalization & Registry), R9 (Positional & Structural Preservation)
-- **Dependencies and Preconditions:** Sub-Task 5 (validation), Sub-Task 1 (schemas), Sub-Task 4 (Docling output persisted).
+- **Objective:** Define ``ChunkMetadata`` — the single source of truth for every chunk produced by the pipeline.  Also implement deterministic UUIDv5 generation for chunk IDs.
+- **Related Requirements:** R2 (Internal Schema), R3 (ID Strategy), R8 (ChunkMetadata Model)
+- **Dependencies and Preconditions:** Sub-Task 1 (schemas directory exists).  Sub-Task 2 (project structure).
 - **In Scope for This Sub-Task:**
-  - Create `src/normalization/__init__.py` and `src/normalization/docling_normalizer.py`.
-  - Implement `normalize_document(doc: DocumentSchema, dl_doc: DoclingDocument) -> DocumentSchema` that:
-    1. Iterates over every item in `dl_doc` (text items, tables, figures, formulas, etc.).
-    2. Maps each Docling item type to the appropriate `ElementSchema` subclass.
-    3. Extracts bounding boxes (converting coordinate systems to normalized 0-1).
-    4. Assigns `reading_order` from Docling's provenance/ordering (falling back to spatial top-to-bottom, left-to-right).
-    5. Assigns `element_id` using the deterministic UUID strategy.
-    6. Links captions to their parent elements (Docling often provides `caption_of` references).
-    7. Preserves the original content string and any available structured content (table cells, formula LaTeX).
-    8. Creates `PageSchema` objects for each page with page-level metadata.
-  - Implement `ElementRegistry` class:
-    - `add(element: ElementSchema)`
-    - `get(element_id: UUID) -> ElementSchema`
-    - `get_by_page(page_num: int) -> List[ElementSchema]`
-    - `get_by_type(element_type: str) -> List[ElementSchema]`
-    - `iter_in_reading_order() -> Iterator[ElementSchema]`
-    - Stores in-memory dict for O(1) lookup.
-  - Implement `preserve_proximity(elements: List[ElementSchema]) -> None` that computes and stores:
-    - Page-level left/right/top/bottom neighbors within a configurable distance threshold.
-    - Same-page, same-column elements as being in proximity.
-  - Handle text items that span multiple lines — merge into logical paragraphs based on font size, spacing, and style.
+  - Create ``src/chunking/models.py`` with:
+    1. ``CHUNK_ID_NAMESPACE`` — a fixed UUIDv4 used as the namespace for all chunk UUIDs.
+    2. ``make_chunk_id(document_hash, sequence_number, chunk_types) -> str`` — deterministic UUIDv5 from ``{doc_hash}|{seq}|{sorted_types}``.
+    3. ``ChunkMetadata`` — frozen Pydantic v2 ``BaseModel`` with all fields discussed:
+
+       *Identity:* ``chunk_id``, ``document_name``, ``document_type``, ``document_hash``.
+       *Embedding:* ``embedding_type`` (``"text"`` | ``"image"`` | ``"textual_description"``), ``chunk_text``.
+       *Structure:* ``chunk_types``, ``section_path``, ``section_headings``, ``page_numbers``, ``sequence_number``.
+       *Visual:* ``image_type``, ``image_uri``, ``caption_text``, ``caption_number``.
+       *Graph linking:* ``element_self_refs``, ``refers_to``, ``relates_to``.
+       *Quality:* ``token_count``.
 - **Out of Scope for This Sub-Task:**
-  - No hierarchy reconstruction (sections) — that is Sub-Task 8.
-  - No relationship generation — that is Sub-Task 9 (but proximity relationships are stored here).
-  - No chunking.
+  - No chunking logic — just the data model.
+  - No embedding generation — fields are populated but not embedded yet.
 - **Instructions:**
-  1. Study Docling's output format by examining `dl_doc.export_to_dict()` on the sample PDF. Identify the item types and their fields.
-  2. Create a mapping dict: `DOCLING_TYPE_TO_INTERNAL_TYPE`.
-  3. For reading order: Docling may provide `provenance` with ordering. If not, implement a spatial sort (top-to-bottom, left-to-right) per page.
-  4. For caption detection: Docling often labels captions as `caption` type. Link them by checking `caption_of` or spatial proximity + heuristics.
-  5. The ElementRegistry should not be persisted separately — it can be reconstructed from `DocumentSchema.elements`.
+  1. Use the ``make_chunk_id`` formula: ``uuid.uuid5(CHUNK_ID_NAMESPACE, f"doc:{hash}|seq:{seq:06d}|types:{sorted_types}")``.
+  2. ``embedding_type`` is a ``Literal["text", "image", "textual_description"]``.
+  3. ``image_type`` is ``Optional[Literal["picture", "table"]]``.
+  4. All list fields default to ``[]``; ``token_count`` defaults to ``0``.
+  5. Model must be ``frozen=True``.
 - **Acceptance Criteria:**
-  - `normalize_document` returns a fully populated `DocumentSchema` with all elements from the Docling output.
-  - Every element has: `element_id`, `page_num`, `bbox`, `reading_order`, `element_type`, `content`.
-  - The ElementRegistry provides O(1) lookup by ID and correct iteration in reading order.
-  - Proximity information is stored as `nearby` relationships on elements.
-  - Captions are correctly linked to their parent (table/figure) elements.
+  - ``from src.chunking import ChunkMetadata, make_chunk_id`` works.
+  - ``make_chunk_id`` produces the same output for the same inputs; different for different inputs.
+  - ``ChunkMetadata`` can be instantiated with all required fields and raises ``ValidationError`` for invalid ``embedding_type`` values.
+  - Model serializes via ``.model_dump()`` and deserializes via ``.model_validate()``.
 - **Cautionary Points (Risks & Edge Cases):**
-  - Docling may not provide reading order explicitly. The spatial fallback must handle multi-column layouts correctly. Consider using centroid-based sorting with column detection.
-  - Text items that are split across pages (e.g., a paragraph flowing to the next page) should remain as separate elements with a `follows` relationship rather than being forcibly merged.
-  - Some Docling items may be unrecognized types — assign them a generic `ElementSchema` and log a warning.
+  - The ``chunk_id`` must be a string (not UUID object) for Weaviate compatibility.  ``uuid.uuid5()`` returns a ``UUID``; cast to ``str``.
+  - Don't include ``chunk_text`` in the ID — it changes across Docling versions, breaking determinism for the same logical chunk.
 - **Implementation Suggestions:**
-  - Use a visitor pattern: `class DoclingItemVisitor` that dispatches to `visit_text()`, `visit_table()`, `visit_figure()`, etc.
-  - Write the normalization as a series of composable transforms (pipeline pattern): `NormalizeItems() → AssignReadingOrder() → LinkCaptions() → ComputeProximity()`.
+  - Use ``ConfigDict(frozen=True)`` — not the deprecated ``class Config`` style.
+  - Add docstrings to every field describing its role in vector DB filtering or graph DB edge creation.
 - **Testing Suggestions:**
-  - Test with a minimal Docling output (synthetic dict) for each element type.
-  - Test reading order with multi-column layout (two columns of 3 items each — verify left column items come first).
-  - Test caption linking: figure with adjacent caption text, verify they are linked.
-  - Test proximity: elements on same page, within threshold, get `nearby` relationship.
+  - Create ``tests/test_chunking_models.py``: test UUID determinism, field validation, serialization round-trip.
 - **Done When:**
-  - `pytest tests/test_normalization.py` passes, and the normalized output for `2502.04644v1.pdf` contains all expected elements with correct metadata.
+  - ``src/chunking/models.py`` is implemented and ``pytest tests/test_chunking_models.py`` passes.
 
 ---
 
-### Sub-Task 7: Reconstruct Document Hierarchy and Assign Section Paths (R10)
+### Sub-Task 7: Implement Docling HybridChunker Wrapper with Metadata Extraction (R9)
 
 - **Status:** Completed
-- **Objective:** Analyze the normalized elements to reconstruct the document's hierarchical structure (Document → Page → Section → SubSection → Element), assign section paths (e.g., "1.2.3") to every element, and create `contains` relationships.
-- **Related Requirements:** R10 (Hierarchy Reconstruction)
-- **Dependencies and Preconditions:** Sub-Task 6 (normalization and element registry). Sub-Task 1 (schemas).
+- **Objective:** Wrap Docling's ``HybridChunker``, extract all ``ChunkMetadata`` fields from ``DocChunk.meta``, and produce a list of text chunks.
+- **Related Requirements:** R9 (HybridChunker Wrapper)
+- **Dependencies and Preconditions:** Sub-Task 6 (ChunkMetadata model exists).  Sub-Task 4 (Docling extraction works).
 - **In Scope for This Sub-Task:**
-  - Create `src/normalization/hierarchy_builder.py`.
-  - Implement `build_hierarchy(doc: DocumentSchema, registry: ElementRegistry)` that:
-    1. Identifies section headers by element type (`SectionHeader`) or by heuristic (large font, bold, numeric prefix pattern like "1.", "1.1.", "A.", "Appendix").
-    2. Builds a section tree: each `Section` has a `section_path` string, `title`, `level` (depth), `parent_section`, and `children_sections`.
-    3. Assigns every element to the most recent open section (the section it falls under based on reading order and spatial position).
-    4. Generates `contains` relationships: section → child elements, section → subsection, document → section.
-    5. Re-orders elements within a section by reading order.
-    6. Handles special cases: front matter (title page, abstract, table of contents), back matter (references, appendices), and multi-level numbered sections.
-  - Implement `assign_section_paths(doc: DocumentSchema) -> None` that writes the section path string (e.g., "3.2.1") into each element's `section_path` field.
-  - Add a `SectionSchema` to `src/schemas/document.py` if not already present.
-  - Handle un-sectioned elements (e.g., headers, footers, page numbers) — assign them to a virtual "page-level" section or leave section_path empty.
+  - Create ``src/chunking/docling_chunker.py`` with:
+    1. ``create_hybrid_chunker()`` — factory for a configured ``HybridChunker`` + ``HuggingFaceTokenizer``.
+    2. ``_build_text_lookup()`` — maps ``self_ref → text`` for all text items in the document.
+    3. ``_build_picture_table_lookup()`` — maps ``self_ref → item`` for all pictures and tables.
+    4. ``_build_picture_table_section_lookup()`` — initialises per-ref section heading accumulators.
+    5. ``_extract_caption_text()`` — resolves a picture/table item's caption text via ``captions[0].cref`` or ``children[0].cref``.
+    6. ``extract_chunk_metadata()`` — produces a ``ChunkMetadata`` from a single ``DocChunk``:
+       * ``chunk_types`` and ``element_self_refs`` from ``meta.doc_items``.
+       * ``page_numbers`` from ``item.prov[*].page_no`` (deduplicated, sorted).
+       * ``section_path`` = ``" > ".join(meta.headings)``.
+       * ``image_type``, ``image_uri``, ``caption_text``, ``caption_number`` for visual elements.
+       * ``chunk_text`` from ``chunker.contextualize(chunk)``.
+       * ``token_count`` from ``tokenizer.count_tokens(text)``.
+    7. ``build_chunk_metadata_list()`` — main orchestrator; chunks the document and returns ``List[ChunkMetadata]``.  Optionally writes raw chunk JSON and metadata JSON to ``output_dir``.
 - **Out of Scope for This Sub-Task:**
-  - No chunking (section paths are used during chunking, but chunking itself is later).
-  - No relationship generation beyond `contains`.
+  - No visual enrichment (image / textual_description chunks) — that is Sub-Task 8.
+  - No cross-reference resolution.
+  - No embedding.
 - **Instructions:**
-  1. Use the reading order established in Sub-Task 6.
-  2. Section header detection: prefer explicit type from Docling (`heading`). When not available, use heuristics: font size jump, bold, regex for "Chapter 1", "1.", "1.1.", "Section", "Appendix".
-  3. Section tree: maintain a stack of open sections. On encountering a section header at level L, pop all sections at depth >= L, then push the new section.
-  4. Elements between a section header and the next section header (or end) belong to the current top-of-stack section.
- - **Acceptance Criteria:**
-   - The hierarchy builder identifies all section headers in the sample document.
-   - Every element (except headers/footers/page numbers) has a non-empty `section_path`.
-   - The section paths form a valid tree (parent paths are prefixes of child paths).
-   - `contains` relationships are generated for all containment levels.
-   - The hierarchy is consistent with the document's table of contents (when available).
+  1. The ``tokenizer`` argument to ``extract_chunk_metadata`` is the ``HuggingFaceTokenizer`` from the chunker (``chunker.tokenizer``).
+  2. Page numbers: iterate ``item.prov`` (list of ``ProvenanceItem``), collect ``prov.page_no``, deduplicate via ``sorted(set(...))``.
+  3. Caption number: use the existing ``src/utils/caption_extractor.extract_caption_label()``.
+  4. Section accumulation: ``pic_table_section_lookup`` is mutated in-place by ``extract_chunk_metadata``; the caller passes the same dict to all calls so sections accumulate across chunks.
+  5. The ``DocChunk.model_validate(chunk)`` call is needed because ``HybridChunker`` yields raw objects — validate to access typed ``meta`` fields.
+- **Acceptance Criteria:**
+  - ``build_chunk_metadata_list(conv_result)`` returns a list of ``ChunkMetadata``, one per chunk.
+  - Every chunk has populated ``chunk_id``, ``document_name``, ``chunk_text``, ``page_numbers``, ``section_path``, ``token_count``, and ``element_self_refs``.
+  - Chunks containing pictures/tables have ``image_type``, ``image_uri``, ``caption_text`` populated.
+  - ``section_path`` is correct (verified against ``meta.headings`` of a known document).
+  - Optional ``output_dir`` parameter writes both JSON files.
 - **Cautionary Points (Risks & Edge Cases):**
-   - Documents may have un-numbered sections (e.g., "Abstract", "Introduction" without numbers). Assign paths like "0.1", "0.2" or use slugified titles.
-   - Floating elements (figures, tables) may appear after the section they belong to (e.g., figure at top of next page). Use anchoring heuristics: if a figure appears within 3 pages after the section where it is referenced, assign it to that section.
-   - Page headers/footers and page numbers should not be treated as sections.
+  - ``meta.doc_items`` may be empty for some chunks (e.g., a chunk that Docling produces with no labelled items).  Handle gracefully — all lists default to empty, ``page_numbers`` stays empty, ``section_path`` may be ``""``.
+  - Picture items may not have a ``captions`` list — the ``_extract_caption_text`` function handles ``None`` correctly.
+  - ``chunk_text`` for visual-only chunks may be very short (just the caption or a few words).  This is expected — ``token_count`` will reflect it.
 - **Implementation Suggestions:**
-   - Represent the section tree as a list of `SectionNode` objects with parent pointers.
-   - Use regex patterns for numbered section detection: `r'^(\d+(?:\.\d+)*)\s+.*'`
-   - Store the section tree in `DocumentSchema.sections` as a flat list with parent references (easier to serialize than recursive tree).
+  - Keep all helper functions module-private (``_`` prefix) except the public API.
+  - Use ``logging.getLogger(__name__)`` with ``INFO`` for chunk counts, ``DEBUG`` for per-chunk details.
 - **Testing Suggestions:**
-   - Create synthetic documents (as normalized element lists) with known section structures (flat, deeply nested, mixed numbered/un-numbered).
-   - Test with the sample PDF and verify the output section hierarchy matches the actual PDF structure.
+  - Create ``tests/test_docling_chunker.py`` with a fixture that runs ``build_chunk_metadata_list`` on the sample PDF.
+  - Verify chunk count > 0, all fields present, page numbers valid, section paths parseable.
+  - Test with ``output_dir`` — verify JSON files exist and are valid.
 - **Done When:**
-   - `pytest tests/test_hierarchy.py` passes, and the hierarchy for `2502.04644v1.pdf` accurately reflects its section structure (title, abstract, sections, references, appendix).
+  - ``pytest tests/test_docling_chunker.py`` passes, and manual inspection of chunk metadata for ``2502.04644v1.pdf`` shows correct values.
 
 ---
 
-### Sub-Task 8: Process Tables into Structured Representations (R11)
+### Sub-Task 8: Implement Visual Element Enrichment (R10)
 
 - **Status:** Completed
-- **Objective:** Extract all tables from the normalized document, convert them into multiple structured formats (markdown, HTML, JSON, plain-text summary), compute table metadata, and handle multi-page/spanned tables.
-- **Related Requirements:** R11 (Table Processing)
-- **Dependencies and Preconditions:** Sub-Task 6 (normalized elements with TableSchema entries). Sub-Task 7 (section paths available for table elements).
+- **Objective:** For each picture and table in the document, generate an LLM-powered textual description and create two additional ``ChunkMetadata`` entries: one ``embedding_type="image"`` and one ``embedding_type="textual_description"``.
+- **Related Requirements:** R10 (Visual Element Enrichment)
+- **Dependencies and Preconditions:** Sub-Task 7 (chunk metadata list produced, pic_table_section_lookup populated). Sub-Task 6 (ChunkMetadata model). ``src/utils/instructor_api_response.py`` must be functional.
 - **In Scope for This Sub-Task:**
-  - Create `src/normalization/table_processor.py`.
-  - Implement `process_table(element: TableSchema, dl_doc: DoclingDocument) -> TableSchema` (enriches the element in-place or returns an updated copy) that:
-    1. Extracts table data from Docling's structured table output (cells, rows, columns, headers).
-    2. Converts to markdown table format → `element.markdown`.
-    3. Converts to HTML table format → `element.html`.
-    4. Converts to JSON (list of dicts, each dict is a row) → `element.json`.
-    5. Generates a plain-text summary: "Table showing [title/description]: [row_count] rows × [col_count] columns, headers: [col1, col2, ...]" → `element.summary`.
-    6. Computes and stores metadata: `row_count`, `col_count`, `headers`, `has_header_row`, `is_spanning` (multi-page).
-  - Implement `detect_spanning_tables(elements: List[TableSchema]) -> List[Tuple[int, int, TableSchema]]` that:
-    1. Identifies tables that are continued across pages (same table label, adjacent page numbers, identical column structure).
-    2. Marks them with `is_spanning = True` and assigns a `span_group_id`.
-    3. Optionally, merge the cells of spanned parts into a single logical table.
-  - Implement `generate_table_relationship(element: TableSchema, registry: ElementRegistry)` that links tables to their captions (`has_caption`), footnotes (`refers_to`), and nearby text elements (`nearby`, `describes`).
+  - Create ``src/chunking/visual_enricher.py`` with:
+    1. ``_get_caption_for_item()`` — extract caption text from a picture/table item.
+    2. ``_describe_image_async()`` — async LLM call using ``get_llm_response_from_instructor`` with ``_ImageDescription`` pydantic response model.
+    3. ``generate_all_image_descriptions()`` — async function that calls ``_describe_image_async`` for all pictures/tables concurrently via ``asyncio.gather`` + ``asyncio.Semaphore(max_concurrent)``.
+    4. ``enrich_visual_chunks()`` — sync wrapper that:
+       * Calls ``asyncio.run(generate_all_image_descriptions(...))`` once (NOT per item).
+       * For each picture/table, creates two ``ChunkMetadata``:
+         - ``embedding_type="image"`` — ``chunk_text`` = caption (reference only), ``image_uri`` is what gets embedded later.
+         - ``embedding_type="textual_description"`` — ``chunk_text`` = LLM description (embedded later).
+       * Sequence numbers continue from the last text chunk.
+       * Returns the combined list: text chunks + visual chunks.
 - **Out of Scope for This Sub-Task:**
-  - No table data quality assessment (e.g., verifying numerical accuracy).
-  - No integration into chunks yet (that is Sub-Task 14-15).
+  - No actual embedding of images or descriptions — that is Sub-Task 12.
+  - No chunking strategy beyond what Docling provides.
 - **Instructions:**
-  1. Docling's `TableItem` includes a `data` attribute (a `pandas.DataFrame` or similar). Use that as the source of truth.
-  2. For markdown: join cells with `|`, join rows with newlines, add a header separator row.
-  3. For HTML: use `<table>`, `<thead>`, `<tbody>`, `<tr>`, `<td>`, `<th>`.
-  4. For JSON: use `[{"col1": val, "col2": val, ...}, ...]`.
-  5. The summary text should be brief (2-3 sentences max).
-  6. Span detection: check if two tables on consecutive pages have identical column count and similar column headers. If yes, treat as span.
+  1. The ``_ImageDescription`` pydantic model should have ``description: str`` and ``keywords: List[str]`` fields.
+  2. Concatenate output as: ``f"Image Caption: {caption}\\nImage Description: {description}\\nKeywords: {keywords}"``.
+  3. Failed LLM calls (``return_exceptions=True`` in ``asyncio.gather``) produce empty descriptions — log a warning per failure but don't halt.
+  4. ``_label_value()`` normalises ``DocItemLabel`` enum values to lowercase strings (``"picture"``, ``"table"``) for the ``Literal`` type.
+  5. Section info for visual chunks comes from ``pic_table_section_lookup`` (accumulated by Sub-Task 7's ``extract_chunk_metadata``).
 - **Acceptance Criteria:**
-   - Every `TableSchema` element has populated `markdown`, `html`, `json`, `summary`, and metadata fields.
-   - Multi-page spanned tables are detected and linked (if any exist in sample docs).
-   - Tables are linked to their captions and nearby text.
-   - The summary text is human-readable and informative.
+  - ``enrich_visual_chunks`` returns a list with text chunks + 2× picture_count + 2× table_count chunks.
+  - Each visual chunk has correct ``embedding_type``, ``image_uri``, ``caption_text``, and ``chunk_text``.
+  - LLM descriptions are generated concurrently (verify timing is faster than sequential).
+  - Chunk IDs are deterministic and unique.
 - **Cautionary Points (Risks & Edge Cases):**
-   - Tables with merged cells (colspan/rowspan) — markdown representation cannot fully represent these. HTML and JSON can. The markdown should use a best-effort approximation.
-   - Empty tables: Docling might return 0-row tables. Handle without error.
-   - Very wide tables (many columns): the markdown may be very wide but that's acceptable.
+  - The instructor API may be unavailable or rate-limited.  Handle failures gracefully — empty descriptions should not crash the pipeline.
+  - If ``pic_table_lookup`` is empty, return the original list unchanged with an info log.
+  - ``asyncio.run()`` cannot be called from within an already-running event loop.  The sync wrapper is designed to be the entry point; if integrating into an async app, call ``generate_all_image_descriptions`` directly.
 - **Implementation Suggestions:**
-   - Use `tabulate` library for markdown conversion if available, otherwise manual.
-   - For JSON, use pandas DataFrame's `.to_dict(orient='records')`.
+  - Use ``asyncio.Semaphore(max_concurrent)`` to limit concurrent API calls (default 5).
+  - The ``_describe_image_async`` coroutine should be thin — just the LLM call, leaving concurrency control to the caller.
 - **Testing Suggestions:**
-   - Create a synthetic table in a PDF using `reportlab`, process it, and verify all output formats are correct.
-   - Test multi-page span detection by creating two tables on consecutive pages with identical structure.
-   - Test edge cases: 1-row table, 1-column table, table with merged cells, empty table.
+  - Mock ``get_llm_response_from_instructor`` to return a fixed ``_ImageDescription`` — verify the two chunks are created correctly.
+  - Test with empty ``pic_table_lookup`` — verify no error, original list returned.
+  - Test with a failing API call — verify warning logged, empty description, chunk still created.
 - **Done When:**
-   - `pytest tests/test_table_processor.py` passes, and all tables in `2502.04644v1.pdf` are processed into all formats with correct metadata.
+  - ``pytest tests/test_visual_enricher.py`` passes with mocked LLM calls.
 
 ---
 
-### Sub-Task 9: Process Images/Charts/Graphs — Asset Saving, Classification, Metadata (R12)
-
-- **Status:** Completed
-- **Objective:** Extract images, charts, and graphs from Docling output, save them as dedicated assets, classify their visual type, and prepare metadata (with extensibility for future vision-language descriptions).
-- **Related Requirements:** R12 (Image/Chart/Graph Processing)
-- **Dependencies and Preconditions:** Sub-Task 6 (normalized elements with ImageSchema/ChartSchema/GraphSchema). Sub-Task 4 (page and table images already saved by Docling).
-- **In Scope for This Sub-Task:**
-  - Create `src/metadata/image_processor.py`.
-  - Implement `save_visual_asset(element: ImageSchema | ChartSchema | GraphSchema, dl_doc: DoclingDocument, doc: DocumentSchema)` that:
-    1. Extracts the image bitmap from Docling (if embedded) or renders from the PDF page using the bounding box.
-    2. Saves as PNG to `data/raw/{doc_id}/assets/{element_id}.png`.
-    3. Stores the asset file path in `element.asset_path`.
-    4. Saves a thumbnail (max 256px) to `data/raw/{doc_id}/assets/thumb_{element_id}.png`.
-  - Implement `classify_visual_type(element, image_data) -> str` that:
-    1. Uses simple heuristics or a lightweight classifier (optional, skip if no model) to categorize: `chart`, `graph`, `diagram`, `photograph`, `illustration`, `logo`, `screenshot`, `other`.
-    2. Stores the classification in `element.visual_type`.
-    3. If classification is not possible (no model loaded), label as `"unclassified"` and log a debug message.
-  - Implement `prepare_visual_metadata(element, doc)` that:
-    1. Computes basic image properties: width, height (pixels), aspect ratio, file size, color mode.
-    2. Links to caption: if Docling provides a caption, set `has_caption` relationship.
-    3. Links to nearby text elements (`nearby`, `describes`) for elements within the same page within a configurable distance.
-    4. Prepares an extensibility `vision_description` field (initially `None`) for future Vision-Language Model (VLM) integration.
-  - Update `ChartSchema` and `GraphSchema` with appropriate fields: `visual_type`, `asset_path`, `thumbnail_path`, `image_properties: dict`, `vision_description: Optional[str]`.
-- **Out of Scope for This Sub-Task:**
-  - No actual Vision-Language Model inference. The `vision_description` field is reserved but not populated.
-  - No chart data extraction (e.g., reading values from chart plots — that would be a future enhancement).
-- **Instructions:**
-  1. Image extraction from PDF: use PyMuPDF (`fitz`) or `pdf2image` to render the page region given by the bounding box. Docling may already provide the image bytes — prefer that.
-  2. Classification: if `doclayout-yolo` is installed and has a visual classifier, use it. Otherwise, use a simple rule based on aspect ratio, size, and position (charts are often full-width, logos are small and at corners).
-  3. Thumbnail: use Pillow's `Image.thumbnail()`.
-  4. Asset paths should use the `element_id` (UUID) as filename for uniqueness.
-- **Acceptance Criteria:**
-   - Every visual element has a saved asset file (PNG) and thumbnail.
-   - `element.asset_path` and `element.thumbnail_path` are valid paths.
-   - Visual type is classified (or set to `"unclassified"`).
-   - Image properties are populated.
-   - Caption and nearby relationships are established.
-   - The `vision_description` field exists and is `None` (not populated yet).
-- **Cautionary Points (Risks & Edge Cases):**
-   - Embedded images in PDF may have different resolution than page rendering. Use the higher-quality source available.
-   - Some elements may be marked as figures but are actually decorative (borders, lines). The classification step should attempt to detect these and exclude them or mark as `"decorative"`.
-   - Memory: avoid loading all page images simultaneously; process elements page-by-page.
-- **Implementation Suggestions:**
-   - Use a `VisualAssetManager` class that handles saving and deduplication (if same image appears on multiple pages, save once).
-   - For the classifier stub, use a simple function that can be replaced with a model in the future.
-- **Testing Suggestions:**
-   - Create a PDF with embedded images, charts (from matplotlib), and photographs. Run processing and verify assets are saved correctly.
-   - Verify that classification heuristics label known chart images correctly.
-   - Test with a PDF that has no images — no errors, empty results.
-- **Done When:**
-   - `pytest tests/test_image_processor.py` passes, and visual elements from `2502.04644v1.pdf` are correctly processed.
-
----
-
-### Sub-Task 10: Process Formulas and Link to Explanatory Text (R13)
-
-- **Status:** Completed
-- **Objective:** Extract formulas from Docling output, classify them (inline vs. display), convert to LaTeX/symbolic representation, and link to surrounding explanatory text.
-- **Related Requirements:** R13 (Formula Processing)
-- **Dependencies and Preconditions:** Sub-Task 6 (normalized elements with FormulaSchema). Docling must extract formula items.
-- **In Scope for This Sub-Task:**
-  - Create `src/normalization/formula_processor.py`.
-  - Implement `process_formula(element: FormulaSchema, dl_doc: DoclingDocument) -> FormulaSchema` that:
-    1. Extracts the raw formula text from Docling (may be in LaTeX, MathML, or plain text).
-    2. Converts to LaTeX if not already in that format (use `pylatexenc` or similar).
-    3. Stores LaTeX in `element.latex`.
-    4. Stores a plain-text approximation (e.g., removing LaTeX commands) in `element.text_approximation`.
-    5. Classifies as `inline` or `display` based on Docling's classification or layout heuristics (whether the formula is in its own block or embedded in a text line).
-    6. Extracts inline formulas embedded within text elements and splits them out (or links them to the parent text).
-  - Implement `link_formula_to_text(element: FormulaSchema, registry: ElementRegistry)` that:
-    1. Finds the nearest paragraph element (same page, reading order) that discusses the formula.
-    2. Creates `explains` relationship from text → formula.
-    3. If the formula is inline, creates `contains` from paragraph → formula.
-  - Implement `link_formula_to_notation(element: FormulaSchema)` that:
-    1. Extracts variable mentions from the formula (e.g., `x`, `\theta`, `\Sigma`).
-    2. Stores a `variables: List[str]` list on the formula element.
-    3. Links to other elements that define those variables.
-- **Out of Scope for This Sub-Task:**
-   - No symbolic computation or CAS integration.
-   - No rendering of formulas as images (could be future enhancement).
-- **Instructions:**
-  1. Docling may not extract formulas in all documents. For documents without formulas, skip processing gracefully.
-  2. LaTeX conversion: if Docling provides `latex` field, use it directly. If it provides `mathml`, convert using `latexcodec` or `pylatexenc`.
-  3. Inline formula detection: check if the formula's bbox is within the bbox of a text block, or if Docling labels it as `inline`.
-- **Acceptance Criteria:**
-   - Every `FormulaSchema` has populated `latex` and `text_approximation` fields.
-   - Inline vs. display classification is correct.
-   - Formulas are linked to their surrounding text via `explains` relationships.
-   - Variable mentions are extracted (when feasible).
-- **Cautionary Points (Risks & Edge Cases):**
-   - Formula extraction quality varies widely between PDFs. The processor must gracefully handle missing or malformed LaTeX.
-   - Some formulas may be images (not extracted by Docling). These will be in the image pipeline instead.
-   - Multi-line equations: treat as display formulas, keep them as a single formula element.
-- **Implementation Suggestions:**
-   - Use a regex-based extraction for variable names: `r'\\([a-zA-Z]+|\\[a-zA-Z]+'` to find LaTeX commands and single-letter variables.
-   - For linking, use reading-order proximity: the text element immediately preceding a display formula usually discusses it.
-- **Testing Suggestions:**
-   - Create a PDF with known LaTeX formulas (use `reportlab` with Platypus or LaTeX-generated PDF).
-   - Test inline formula detection, display formula detection, LaTeX storage, and text linking.
-   - Test with a document without formulas — no errors.
-- **Done When:**
-   - `pytest tests/test_formula_processor.py` passes.
-
----
-
-### Sub-Task 11: Define and Generate Relationship Metadata (R14)
-
-- **Status:** Completed
-- **Objective:** Implement the full relationship generation engine that creates all typed relationships between elements as defined in the Core Concepts table.
-- **Related Requirements:** R14 (Relationship Metadata)
-- **Dependencies and Preconditions:** Sub-Tasks 6-10 (all element types processed, captions linked, hierarchy built, spatial proximity computed). Sub-Task 1 (RelationshipSchema).
-- **In Scope for This Sub-Task:**
-  - Create `src/metadata/relationship_generator.py`.
-  - Implement `generate_all_relationships(doc: DocumentSchema, registry: ElementRegistry) -> List[RelationshipSchema]` that composes:
-    1. **Structural relationships** (from hierarchy builder): `contains`, `belongs_to`.
-    2. **Sequential relationships** (from reading order): `follows`, `precedes` between consecutive elements on the same page and consecutive pages.
-    3. **Caption relationships** (from table & image processors): `has_caption`.
-    4. **Spatial relationships** (from proximity): `nearby`.
-    5. **Section relationships** (from hierarchy builder): `same_section_as` (all elements sharing a section path get pairwise or group relationships — use a group edge rather than fully connected to avoid blowup).
-    6. **Reference relationships** (`refers_to`): scan text elements for patterns like "see Table X", "as shown in Figure Y", "Equation Z", and link to the corresponding element using caption/heading text matching.
-    7. **Descriptive relationships** (`describes`): text elements that precede or follow a figure/table/chart and share the same section are likely describing it.
-    8. **Formula explanation relationships** (from formula processor): `explains`.
-  - Implement `deduplicate_relationships(rels: List[RelationshipSchema]) -> List[RelationshipSchema]` that:
-    1. Removes exact duplicates (same source, target, type).
-    2. Removes self-references (source == target).
-    3. Resolves symmetric relationships: `nearby` and `same_section_as` should be stored once but treated as undirected.
-  - Implement `generate_relationship_summary(rels: List[RelationshipSchema]) -> dict` that counts relationships by type.
-- **Out of Scope for This Sub-Task:**
-  - No graph database loading (that is future work).
-  - No external LLM calls for relationship inference (relationships are deterministic based on structure/spatial/text-pattern).
-- **Instructions:**
-  1. For `refers_to`: compile a registry of all tables, figures, and formulas with their captions/labels. Scan each text element for patterns like `r'(?:Table|Figure|Fig\.|Equation|Eq\.)\s*(\d+(?:\.\d+)*)'` and look up matching labeled elements.
-  2. For `describes`: assign text elements that are within N positions of a visual element in reading order (N=2) and share the same section as describing it.
-  3. For `same_section_as`: store one relationship per section path (a group identifier) rather than O(n^2) pairwise edges.
-  4. Ensure all relationships have stable relationship IDs (UUIDv5).
-- **Acceptance Criteria:**
-   - All relationship types from the Core Concepts table are generated.
-   - `refers_to` correctly matches "see Table 1" patterns to actual table elements.
-   - `describes` links paragraphs to adjacent figures.
-   - No duplicate or self-referencing relationships.
-   - `same_section_as` is stored efficiently (group-based, not pairwise).
-   - The relationship generator produces deterministic results (same input → same output).
-- **Cautionary Points (Risks & Edge Cases):**
-   - Pattern matching for `refers_to` may produce false positives (e.g., "see Table for settings" when "Table" is not a numbered reference). Mitigate by requiring a number after the keyword, or by checking if an element with matching label exists.
-   - In very large documents, the number of `same_section_as` relationships could be large if stored pairwise. Use a single relationship with a group id and a list of members instead.
-- **Implementation Suggestions:**
-   - Use `re` for text pattern matching.
-   - For `same_section_as`, use `RelationshipSchema(group_id=str, member_ids=List[UUID], relationship_type="same_section_as")`.
-   - Write each relationship type as a separate generator function, composed by `generate_all_relationships`.
-- **Testing Suggestions:**
-   - Create a mock document with known elements (text, table, figure, formula) and known reading order. Verify all expected relationships are generated.
-   - Test `refers_to` matching with various patterns: "see Table 1", "as shown in Figure 2.1", "Equation 5", "Fig. 3a".
-   - Test deduplication: add duplicate relationships to input, verify output has no duplicates.
-- **Done When:**
-   - `pytest tests/test_relationships.py` passes, and the relationship output for `2502.04644v1.pdf` is plausible (visual inspection of counts and examples).
-
----
-
-### Sub-Task 12: Implement Hierarchical Chunking (R15 — part 1)
+### Sub-Task 9: Implement Cross-Reference Resolution (R11)
 
 - **Status:** Pending
-- **Objective:** Implement hierarchical chunking that creates chunks based on document section boundaries. Each section produces one or more chunks, preserving section context and element references.
-- **Related Requirements:** R15 (Chunking)
-- **Dependencies and Preconditions:** Sub-Task 7 (hierarchy/section paths). Sub-Tasks 8-10 (tables, images, formulas processed). Sub-Task 11 (relationships available). Sub-Task 1 (ChunkSchema).
+- **Objective:** Scan chunk text for "see Figure 3", "Table IV", "as shown in Fig. 1" patterns and populate ``refers_to`` fields by matching references against a caption index built from the raw Docling picture/table items.
+- **Related Requirements:** R11 (Cross-Reference Resolution)
+- **Dependencies and Preconditions:** Sub-Task 8 (all chunks created, ``pic_table_lookup`` available).  Sub-Task 6 (ChunkMetadata model).  ``extract_caption_label()`` from ``src/utils/caption_extractor.py``.
 - **In Scope for This Sub-Task:**
-  - Create `src/chunking/__init__.py`, `src/chunking/hierarchical_chunker.py`, and `src/chunking/base.py`.
-  - Create `BaseChunker` abstract class in `base.py` with:
-    - `chunk(doc: DocumentSchema, registry: ElementRegistry) -> List[ChunkSchema]`
-    - Common utilities: `_build_chunk_content()`, `_assign_relationships()`.
-  - Implement `HierarchicalChunker(BaseChunker)`:
-    1. For each section in the document's hierarchy, collect all elements belonging to that section (in reading order).
-    2. If the section's total text length / token count exceeds the configured chunk token limit (default 512), split the elements within the section by reading order into multiple sub-chunks, each keeping the same `section_path`.
-    3. For each chunk, generate `content` by concatenating element contents with element references: `"{{ELEM:uuid}}"` markers embedded inline.
-    4. Store `element_refs: List[UUID]` — all element UUIDs whose content is included in this chunk.
-    5. Store `chunk_type = "hierarchical"`.
-    6. Store `section_path` and `page_range` (min page to max page across elements).
-    7. Attach relevant relationships: if all elements in the chunk share a `same_section_as` relationship, include it; otherwise carry over all relationships whose source or target is in `element_refs`.
-    8. Ensure a table and its caption are always in the same chunk (never split across chunks).
-  - Implement `_enforce_integrity_constraints(elements, chunk_candidates)` that prevents splitting:
-    - A table from its caption.
-    - A figure from its caption.
-    - A formula from its immediately preceding explanatory text.
+  - New function ``find_all_caption_refs(text) -> List[str]`` in ``src/utils/caption_extractor.py``.  Reuses the same ``_CAPTION_RE`` regex as ``extract_caption_label()`` but scans with ``finditer`` (not ``match``) to locate all references anywhere in a string.  Each returned string is a normalized label like ``"figure 1"`` or ``"table IV"``.
+  - Create ``src/chunking/cross_reference_resolver.py`` with:
+    1. ``_build_caption_index(pic_table_lookup, text_lookup, chunk_metadatas) -> Dict[str, str]``
+       - Iterates every ``(ref, item)`` in ``pic_table_lookup``.
+       - Extracts the caption text from ``text_lookup`` via the item's ``captions[0].cref``.
+       - Calls ``extract_caption_label(caption_text)`` to get a normalized label (e.g. ``"figure 1"``).
+       - Finds which chunk contains this visual element by checking ``element_self_refs`` in each chunk (build a ``{self_ref → chunk_id}`` reverse lookup once).
+       - Inserts ``label → chunk_id`` into the index.
+    2. ``resolve_cross_references(chunk_metadatas, pic_table_lookup, text_lookup) -> List[ChunkMetadata]``
+       - Builds the caption index via ``_build_caption_index``.
+       - For each chunk, calls ``find_all_caption_refs(chunk.chunk_text)``.
+       - For each matched label, looks up the target ``chunk_id`` in the index.
+       - Filters out self-references (target == current chunk's own ``chunk_id``).
+       - Deduplicates and sorts ``refers_to``.
+       - Returns a new list of ``ChunkMetadata`` via ``model_copy(update={"refers_to": [...]})`` (chunks are frozen — never mutated).
 - **Out of Scope for This Sub-Task:**
-  - Semantic chunking and cluster-semantic chunking (Sub-Tasks 13, 14).
-  - No chunk-level embedding generation (that is future/vector stage).
+  - No "relates_to" population (handled by Sub-Task 11 via top-k similarity).
+  - No graph DB loading.
+  - No changes to the ``ChunkMetadata`` model or its ``caption_number`` field.
 - **Instructions:**
-  1. Token counting: use `tiktoken` with `cl100k_base` encoding or Docling's tokenizer to count tokens.
-  2. Content building: for text elements, use their text content. For tables, use the summary text with a marker `{{TABLE:uuid}}`. For images, use `{{IMAGE:uuid}}` with alt text or caption. For formulas, use `{{FORMULA:uuid}}` with LaTeX.
-  3. The `{{ELEM:uuid}}` markers serve as references; downstream consumers can use them to look up full structured data.
+  1. **``find_all_caption_refs``**: Clone ``_CAPTION_RE`` from ``caption_extractor.py``, remove the ``^`` anchor, and use ``re.finditer``.  For each match, normalize the type through ``VALID_IMAGE_TYPES`` and return ``f"{normalized_type} {number}"`` — exactly the same string format as ``extract_caption_label()``.  This guarantees that a reference "Fig. 3" in chunk text and a caption "Figure 3" produce the same key ``"figure 3"``.
+  2. **Caption index**: Built from raw Docling items (``pic_table_lookup``), not from ``ChunkMetadata.caption_number``.  This avoids depending on chunk-metadata representation and sidesteps any discrepancies between how the chunker populates ``caption_number`` vs. how references appear in text.
+  3. **Reverse lookup**: Build ``Dict[str, str]`` mapping each ``element_self_ref`` to its containing chunk's ``chunk_id``.  This is O(n·m) but n ≤ ~100 chunks and m ≤ ~50 visual elements per document, so trivial.
+  4. **No mutation**: All functions return new ``ChunkMetadata`` instances.  Use ``model_copy(update={...})`` on the original.
 - **Acceptance Criteria:**
-   - Every section with content produces at least one chunk.
-   - Chunks respect the token limit (configurable).
-   - A table and its caption are always in the same chunk.
-   - A figure and its caption are always in the same chunk.
-   - Each chunk has valid `element_refs`, `section_path`, and `page_range`.
-   - The content includes element reference markers.
+  - Chunk containing "see Figure 1" resolves to the chunk whose caption label is ``"figure 1"``.
+  - Abbreviation matching works: "Fig. 3" → ``"figure 3"``, "Eqn 5" → ``"equation 5"``.
+  - Multiple references in one chunk → multiple unique entries in ``refers_to``, sorted.
+  - No match when a number is mentioned without a type keyword (e.g., "see Section 3" with no "Figure"/"Table" prefix — ``find_all_caption_refs`` returns empty and the chunk is not modified).
+  - Self-references (a visual chunk's own chunk_text referencing its own caption) are filtered out.
+  - If a reference's ``(type, number)`` is not in the caption index, it is silently skipped (no crash, no empty entry).
 - **Cautionary Points (Risks & Edge Cases):**
-   - A very long section (e.g., 5000 tokens) is split into multiple chunks. Each chunk should still have a coherent reading order (no reordering).
-   - A single element may be larger than the chunk limit (e.g., a huge table). In that case, the element becomes a chunk by itself (or the chunk limit is temporarily stretched).
-   - Empty sections (only a heading, no body text) should produce no chunk, or a very minimal chunk.
+  - **Regex divergence**: ``find_all_caption_refs`` must use the **exact same regex logic** as ``extract_caption_label`` — same ``VALID_IMAGE_TYPES`` normalization, same number patterns.  If they diverge, references won't match their caption index entries.
+  - **Case sensitivity**: The regex is already ``re.IGNORECASE``.  "Figure", "figure", "FIGURE" all match.
+  - **Performance**: ``finditer`` on every chunk's text is fast for regex; the bottleneck is the O(n·m) chunk→ref lookup during index construction, which is negligible at current scale.
 - **Implementation Suggestions:**
-   - Implement `_merge_elements_into_chunks(elements, token_limit)` that greedily groups elements until the token budget is reached, respecting integrity constraints.
-   - Store the token limit in `PipelineSettings.chunk_token_limit`.
+  - Extract the shared regex logic from ``caption_extractor.py`` into a module-level helper that both ``extract_caption_label`` (via ``match``) and ``find_all_caption_refs`` (via ``finditer``) call.  This guarantees they never diverge.
+  - The caption index key is a plain string (e.g. ``"figure 1"``) — no tuple needed since ``extract_caption_label`` returns strings.
 - **Testing Suggestions:**
-   - Create a mock document with sections of varying lengths. Test that small sections fit in one chunk, large sections are split.
-   - Test integrity: create a section with a table on page 1 and its caption on page 2; verify they end up in the same chunk.
-   - Test content format: verify `{{ELEM:...}}` markers are present.
+  - Create a mock ``pic_table_lookup`` with known captions and a mock chunk list — verify resolution.
+  - Test abbreviation variants: "Fig. 1", "Fig 1", "Figure 1", "FIG 1" all resolve to the same target.
+  - Test with no references, multiple references, ambiguous references (type word present but not followed by a number).
+  - Test self-reference filtering.
 - **Done When:**
-   - `pytest tests/test_hierarchical_chunker.py` passes.
+  - ``pytest tests/test_cross_reference_resolver.py`` passes.
+  - ``pytest tests/test_caption_extractor.py`` still passes (no regressions from the new ``find_all_caption_refs`` function).
 
 ---
 
-### Sub-Task 13: Implement Semantic Chunking (R15 — part 2)
+### Sub-Task 10: Implement Batch Multimodal Embedding Pipeline (R12)
 
 - **Status:** Pending
-- **Objective:** Implement semantic chunking that uses embedding similarity to group elements into semantically coherent chunks, independent of section boundaries.
-- **Related Requirements:** R15 (Chunking)
-- **Dependencies and Preconditions:** Sub-Task 12 (base chunker class, chunk schema). `sentence-transformers` installed.
+- **Objective:** Build a batch ``items_to_encode`` list from chunk metadata, dispatch by ``embedding_type``, and encode all items using a multimodal embedding model.
+- **Related Requirements:** R12 (Multimodal Batch Embedding)
+- **Dependencies and Preconditions:** Sub-Task 8 (all chunks created).  Multimodal embedding model available (e.g., ``Qwen/Qwen3-VL-Embedding-2B`` or similar via ``sentence-transformers``).
 - **In Scope for This Sub-Task:**
-  - Create `src/chunking/semantic_chunker.py`.
-  - Implement `SemanticChunker(BaseChunker)`:
-    1. For each page (or for the whole document), embed each text element using the configured sentence-transformer model (default: `BAAI/bge-m3`).
-    2. Compute cosine similarity between adjacent elements in reading order.
-    3. When the similarity between adjacent elements drops below a threshold (configurable, default 0.6), that point becomes a chunk boundary.
-    4. Each chunk gets `chunk_type = "semantic"`.
-    5. Enforce the same integrity constraints as hierarchical chunking (tables + captions, etc.).
-    6. If a semantic chunk would exceed the token limit, further split by similarity within the chunk (recursive splitting).
-  - Implement `compute_similarity_matrix(elements: List[ElementSchema], model) -> np.ndarray` that computes pairwise cosine similarities for all elements on a page (optional optimization).
-  - Implement `find_semantic_boundaries(similarities, threshold) -> List[int]` that returns indices where a boundary should be inserted.
+  - Create ``src/retrieval/embedding_pipeline.py`` with:
+    1. ``build_encode_items(chunks) -> List[Dict]`` — returns ``[{chunk_id, embedding_type, content (text or image URI), metadata}]``.
+    2. ``encode_batch(items, model) -> List[np.ndarray]`` — dispatches to the correct encoder based on ``embedding_type``.
+    3. ``attach_embeddings(chunks, embeddings) -> List[Dict]`` — combines chunk metadata with embedding vectors for Weaviate loading.
 - **Out of Scope for This Sub-Task:**
-  - No cluster-semantic grouping (Sub-Task 14).
+  - No Weaviate loading yet (Sub-Task 11).
+  - No retrieval / query logic.
 - **Instructions:**
-  1. Use `sentence-transformers` `SentenceTransformer` for embeddings.
-  2. Cache embeddings per element to avoid recomputation (embed once, use for both semantic chunking and future cluster-semantic).
-  3. For non-text elements (tables, images, formulas), generate a text representation (summary, caption, LaTeX) before embedding.
+  1. For ``embedding_type="image"``, pass ``image_uri`` to the multimodal encoder's image path.
+  2. For ``embedding_type in ("text", "textual_description")``, pass ``chunk_text`` to the text encoder.
+  3. Use batched encoding where the model supports it.
+  4. Normalize embeddings to unit vectors for cosine similarity.
 - **Acceptance Criteria:**
-   - Chunks are created at points of low semantic similarity between adjacent elements.
-   - Chunk boundaries align with topic shifts (e.g., end of one paragraph, beginning of a different topic).
-   - Token limit is respected; integrity constraints are enforced.
-   - The threshold is configurable and affects chunk granularity.
+  - ``build_encode_items`` correctly dispatches by embedding_type.
+  - ``encode_batch`` returns embeddings for all items.
+  - Embeddings are unit-normalized.
 - **Cautionary Points (Risks & Edge Cases):**
-   - Documents with uniform semantic density (e.g., continuous prose) may produce few boundaries. Handle this by falling back to token-count-based splitting when similarity variance is low.
-   - Very short elements (single line, page number) may have noisy embeddings. Consider filtering out very short elements (< 5 characters) before similarity computation.
+  - Large batches may OOM.  Process in sub-batches (e.g., 32 items at a time).
+  - Image URIs may be invalid or missing — skip with a warning, don't crash.
 - **Implementation Suggestions:**
-   - Run similarity-based chunking per-page first, then merge across pages if the last chunk of page N and first of page N+1 are similar.
-   - Store embeddings temporarily in `EmbeddingCache` (dict keyed by element_id) to reuse in Sub-Task 14.
+  - Use ``SentenceTransformer`` for text/image models that support both modalities.
+  - Store embeddings as ``List[float]`` for JSON serialization to Weaviate.
 - **Testing Suggestions:**
-   - Create a document with clear topic shifts (paragraph about Q1 earnings → paragraph about R&D investment). Verify chunk boundaries occur at topic shifts.
-   - Test with a document where all text is on one topic — verify few or no splits.
-   - Test threshold sensitivity: higher threshold → more chunks, lower → fewer chunks.
+  - Mock the embedding model to return fixed vectors — verify dispatch logic.
+  - Test with empty items list, items with invalid URIs.
 - **Done When:**
-   - `pytest tests/test_semantic_chunker.py` passes.
+  - ``pytest tests/test_embedding_pipeline.py`` passes.
 
 ---
 
-### Sub-Task 14: Implement Cluster-Semantic Grouping (R15 — part 3)
+### Sub-Task 11: Populate ``relates_to`` via Top-k Nearest Neighbors (R12b)
 
 - **Status:** Pending
-- **Objective:** Implement cluster-semantic grouping that uses global embedding clustering to group related elements across section and page boundaries into thematically coherent chunks.
-- **Related Requirements:** R15 (Chunking)
-- **Dependencies and Preconditions:** Sub-Task 13 (embeddings, semantic chunker utilities). Sub-Task 12 (base chunker class).
+- **Objective:** For each chunk, compute its top-k most similar chunks by cosine similarity on the embeddings from Sub-Task 10 and populate ``relates_to``.  Sparse, deterministic, no clustering dependency.
+- **Related Requirements:** R12b (Relates-to via Top-k Similarity)
+- **Dependencies and Preconditions:** Sub-Task 10 (embeddings computed and attached to chunks).  Sub-Task 6 (ChunkMetadata model with ``relates_to`` and ``element_self_refs`` fields).
 - **In Scope for This Sub-Task:**
-  - Create `src/chunking/cluster_chunker.py`.
-  - Implement `ClusterSemanticChunker(BaseChunker)`:
-    1. Embed all elements in the document using the configured model (reuse cache from Sub-Task 13).
-    2. Apply clustering (e.g., HDBSCAN or KMeans with optimal k via silhouette score) to group elements into thematic clusters.
-    3. For each cluster, organize elements by reading order within the cluster.
-    4. Apply the token limit constraint: if a cluster exceeds the limit, split into sub-chunks by reading order within the cluster.
-    5. Each chunk gets `chunk_type = "cluster"`.
-    6. Enforce integrity constraints (tables + captions, etc.).
-    7. Assign a descriptive cluster label (optional) based on most frequent n-grams or TF-IDF of the cluster's text content.
-  - Implement `_determine_cluster_count(elements, model)` that uses silhouette analysis or the elbow method to pick an appropriate number of clusters.
-  - Implement `_label_cluster(elements: List[ElementSchema]) -> str` that generates a short human-readable label (e.g., "Financial Performance", "Experimental Setup").
+  - Create ``src/retrieval/similarity.py`` with:
+    1. ``compute_cosine_similarity_matrix(embeddings: np.ndarray) -> np.ndarray`` — builds the ``n × n`` cosine similarity matrix from unit-normalized embedding vectors.  Pure numpy.
+    2. ``populate_relates_to(chunks: List[ChunkMetadata], embeddings: np.ndarray, *, top_k: int = 3, min_similarity: float = 0.75) -> List[ChunkMetadata]``
+       - For each chunk at index ``i``:
+         - Finds the ``top_k`` most similar chunks (excluding self, index ``i``).
+         - Filters siblings: any candidate chunk whose ``element_self_refs`` **intersects** with the current chunk's ``element_self_refs`` is excluded (picture ↔ textual_description are the same element).
+         - Applies ``min_similarity=0.75`` — if no candidate exceeds this threshold, ``relates_to`` stays empty.
+         - Sorts by descending similarity.
+       - Returns a new list of ``ChunkMetadata`` via ``model_copy(update={"relates_to": [...]})``.
 - **Out of Scope for This Sub-Task:**
-   - No persistent storage of clusters (they are transient for chunk generation).
+  - Cross-document similarity (that is Weaviate's job at query time).
+  - HDBSCAN or any clustering-based approach.
+  - Incremental / streaming updates (re-computing for a single document is trivial).
 - **Instructions:**
-  1. Use `sklearn.cluster` for KMeans or `hdbscan` for HDBSCAN. HDBSCAN is preferred as it handles noise points (elements that don't fit a cluster).
-  2. Noise elements (cluster = -1 in HDBSCAN) should fall back to hierarchical chunking behavior (group with nearest cluster or form own chunk).
-  3. For very small documents (< 20 elements), skip clustering and fall back to semantic or hierarchical chunking.
+  1. Embeddings are expected as an ``(n, d)`` numpy array where row ``i`` corresponds to ``chunks[i]``.
+  2. Normalize rows to unit vectors before computing the dot-product matrix.
+  3. For each row ``i``, zero out ``M[i, i]`` (self-similarity) before taking ``top_k``.
+  4. Build a set of sibling indices for each chunk: two chunks are siblings if ``bool(set(A.element_self_refs) & set(B.element_self_refs))``.  Pre-compute this once per chunk pair or per chunk (since visual siblings are typically 2-3 chunks per element).
+  5. Apply ``min_similarity`` as a hard cutoff — any candidate below this is discarded.  A chunk with no qualifying neighbors gets ``relates_to=[]``.
 - **Acceptance Criteria:**
-   - Elements from different sections but similar topics end up in the same cluster/chunk.
-   - Element ordering within a cluster respects reading order.
-   - Token limit and integrity constraints are enforced.
-   - Noise elements are handled gracefully.
-   - Descriptive cluster labels are generated (even if generic).
+  - Each chunk has 0–3 entries in ``relates_to``, sorted by descending similarity.
+  - No chunk relates to itself (index ``i`` is excluded).
+  - No chunk relates to its own sibling (same element via image + textual_description).
+  - Chunks below ``min_similarity=0.75`` get empty ``relates_to``.
+  - Deterministic: same embeddings → same ``relates_to`` every run.
+  - Pure numpy — no HDBSCAN, no sklearn clustering import.
 - **Cautionary Points (Risks & Edge Cases):**
-   - Clustering on a single document may not produce meaningful clusters for short or homogeneous documents. Fall back gracefully.
-   - HDBSCAN can be slow on very large numbers of elements (>5000). Consider subsampling or mini-batch KMeans.
-   - Clusters may mix element types (text + table + figure). This is intentional and desirable.
+  - **Embedding quality dependent:** If the multimodal model produces poor embeddings (e.g., near-identical vectors for boilerplate headers), ``relates_to`` may contain false positives.  Validation on real document output is essential.
+  - **Sibling filter completeness:** Two chunks sharing any ``element_self_ref`` are definitively siblings.  Adjacent-but-distinct visual elements (Figure 1 and Figure 2 on the same page) may also be near-identical in embedding space — that is acceptable; they ARE semantically related content.
+  - **``min_similarity=0.75``** is a deliberate tradeoff: higher threshold → fewer edges → cleaner graph but quieter traversal.  At 0.75 cosine, only genuinely similar chunks survive.  This value can be exposed as a pipeline parameter if needed later.
 - **Implementation Suggestions:**
-   - Use `HDBSCAN(min_cluster_size=5, min_samples=1)` as a starting point.
-   - For cluster labeling, extract top 5 TF-IDF terms from each cluster and combine (e.g., "budget, revenue, forecast" → "Budget & Revenue").
+  - Use ``numpy.einsum("ij,kj->ik", normalized, normalized)`` for the dot-product matrix — avoids explicit looping and is cache-friendly.
+  - Use ``numpy.argpartition`` for O(n) partial sort to find top_k indices without full sort.
 - **Testing Suggestions:**
-   - Create a document with two distinct topics (e.g., first half about finance, second half about technology). Verify that cluster chunks cleanly separate the topics.
-   - Test with a short document — verify fallback to hierarchical/semantic chunking.
-   - Test with noise elements — verify they don't prevent clustering of main topics.
+  - Create 10 mock chunks with synthetic 2d embeddings — verify top-3 neighbors.
+  - Test sibling exclusion with chunks sharing ``element_self_refs``.
+  - Test threshold: with ``min_similarity=0.99``, verify most chunks get empty ``relates_to``.
+  - Test empty list (n=0) and single-chunk list (n=1) edge cases.
 - **Done When:**
-   - `pytest tests/test_cluster_chunker.py` passes.
+  - ``pytest tests/test_similarity.py`` passes.
 
 ---
 
-### Sub-Task 15: Integrate Tables, Images, Charts, and Formulas into Chunks (R15 — part 4)
+### Sub-Task 12: Weaviate Vector Database Integration (R13)
 
 - **Status:** Pending
-- **Objective:** Ensure all chunking strategies correctly integrate non-text elements (tables, images, charts, formulas) into chunks with references to structured data and summaries, without flattening everything to plain text.
-- **Related Requirements:** R15 (Chunking — integration)
-- **Dependencies and Preconditions:** Sub-Tasks 12-14 (all chunkers implemented). Sub-Tasks 8-10 (table, image, formula processing complete).
+- **Objective:** Load chunks and their embeddings into Weaviate with all filterable properties exposed for hybrid retrieval.
+- **Related Requirements:** R13 (Weaviate Integration)
+- **Dependencies and Preconditions:** Sub-Task 10 (embeddings computed).  Weaviate instance running (local or cloud).
 - **In Scope for This Sub-Task:**
-  - Update all three chunkers to use a unified `_element_to_chunk_content(element: ElementSchema) -> str` method that produces the content string for any element type:
-    - `TextBlock` / `SectionHeader` / `Footnote` / `Header` / `Footer` / `ListBlock`: plain text.
-    - `TableSchema`: `"[Table: {summary}] {{TABLE:{element_id}}}` where `summary` is the plain-text summary from Sub-Task 8.
-    - `ImageSchema` / `ChartSchema` / `GraphSchema`: `"[Image/Chart/Graph: {caption or 'Untitled'}] {{IMAGE:{element_id}}}"`.
-    - `FormulaSchema`: `"[Formula: {text_approximation}] {{FORMULA:{element_id}}}"`.
-    - `CaptionSchema`: plain text (but mark as `#caption` metadata on the referenced element's chunk entry).
-  - Ensure that chunk content is human-readable even without resolving the structured references.
-  - Ensure that `element_refs` includes the UUID of every element whose content appears in the chunk.
-  - Add a `ChunkElementRef` metadata on each chunk: a list of `{"element_id": UUID, "role": "text"|"table"|"image"|"chart"|"formula"|"caption", "summary": str}` for richer downstream use.
+  - Create ``src/retrieval/weaviate_loader.py`` with:
+    1. ``create_schema(client)`` — defines the Weaviate collection with vectorizer=none (we bring our own vectors) and all filterable properties.
+    2. ``ingest_chunks(client, chunks_with_embeddings)`` — batch-inserts chunks into Weaviate.
+  - Filterable Weaviate properties must include: ``document_hash``, ``page_numbers`` (int array), ``section_path`` (text), ``caption_number`` (text), ``chunk_types`` (text array), ``token_count`` (int), ``embedding_type`` (text), ``image_type`` (text).
 - **Out of Scope for This Sub-Task:**
-   - No chunk-level embedding generation.
-   - No merging of chunking strategies (that would be a future ensembling step).
+  - No retrieval / query implementation.
+  - No hybrid search configuration.
 - **Instructions:**
-  1. Modify the `BaseChunker` to use the unified element-to-content converter.
-  2. The reference markers (`{{TABLE:uuid}}`, `{{IMAGE:uuid}}`, `{{FORMULA:uuid}}`) allow downstream stages to retrieve the full structured data from the elements registry or data store.
-  3. The plain-text summary in brackets provides immediate readability without resolution.
+  1. Use Weaviate v4 Python client.
+  2. Collection name: ``"DocumentChunks"``.
+  3. Vector index: HNSW with cosine distance.
+  4. Batch import with error handling — log failed inserts, continue.
 - **Acceptance Criteria:**
-   - All three chunkers produce chunks with the correct reference markers.
-   - Every chunk's `element_refs` contains the UUID of every element it references.
-   - Every chunk includes `ChunkElementRef` metadata.
-   - A chunk's content is readable (e.g., "[Table: 10 rows × 3 columns showing quarterly revenue] {{TABLE:abc-123}}").
+  - Collection is created with correct schema.
+  - All chunks from a processed document are stored and queryable.
+  - Filter queries like ``page_numbers contains 5`` return correct results.
 - **Cautionary Points (Risks & Edge Cases):**
-   - An element with no content (e.g., empty image with no caption) should still produce a minimal reference.
-   - Ensure no duplicated references if the same element appears in multiple chunks (each chunk independently lists its own refs).
+  - Weaviate may have per-batch limits (default 100 objects).  Split large imports.
+  - UUID conflicts: use ``chunk_id`` as the Weaviate object UUID.  Re-import should be idempotent.
 - **Implementation Suggestions:**
-   - Create a `content_renderer.py` module in `chunking/` with the `element_to_chunk_content` function.
-   - Use a registry pattern: `ContentRenderer.register(ElementSchema, render_func)` for extensibility.
+  - Use ``weaviate.classes.config.Configure.NamedVectors.none`` since we provide pre-computed vectors.
 - **Testing Suggestions:**
-   - Unit test `element_to_chunk_content` for each element type.
-   - Integration test with a mock document containing all element types — verify each chunker produces correct content with all reference types.
+  - Integration test with a local Weaviate instance (or mock).
+  - Verify idempotent re-import.
 - **Done When:**
-   - All chunker tests pass with the integrated content rendering.
+  - ``pytest tests/test_weaviate_loader.py`` passes against a running Weaviate instance.
 
 ---
 
-### Sub-Task 16: Export Final Artifacts (R16)
+### Sub-Task 13: Graph Database Construction (R14)
 
 - **Status:** Pending
-- **Objective:** Export all processed data (chunks, elements, relationships, metadata) into standardized file formats (JSONL, Parquet, JSON metadata, human-readable reports).
-- **Related Requirements:** R16 (Exports)
-- **Dependencies and Preconditions:** Sub-Tasks 12-15 (chunking complete). Sub-Task 11 (relationships complete). Sub-Task 6 (elements normalized).
+- **Objective:** Build a property graph from chunk metadata: document node, chunk nodes, section nodes, and edges for sequential order, section membership, cross-references, and relatedness.
+- **Related Requirements:** R14 (Graph DB Construction)
+- **Dependencies and Preconditions:** Sub-Task 9 (cross-references resolved).  Sub-Task 11 (``relates_to`` populated).  Sub-Task 8 (all chunks created).  Neo4j or Apache AGE available.
 - **In Scope for This Sub-Task:**
-  - Create `src/utils/exporter.py`.
-  - Implement `export_chunks(chunks: List[ChunkSchema], output_dir: Path)`:
-    - Writes `chunks.jsonl` (one JSON object per line, each a serialized ChunkSchema).
-    - Writes `chunks.parquet` (same data in Parquet format with schema inferred from ChunkSchema).
-  - Implement `export_elements(elements: List[ElementSchema], output_dir: Path)`:
-    - Writes `elements.jsonl`.
-    - Writes `elements.parquet`.
-  - Implement `export_relationships(relationships: List[RelationshipSchema], output_dir: Path)`:
-    - Writes `relationships.jsonl` (JSONL).
-    - Writes `relationships.parquet`.
-  - Implement `export_metadata(doc: DocumentSchema, output_dir: Path)`:
-    - Writes `metadata.json` (a single JSON object with document-level stats: page count, element count by type, chunk count by type, relationship count by type, processing timestamps, versions).
-  - Implement `export_review_report(doc: DocumentSchema, output_dir: Path) -> str`:
-    - Generates a human-readable HTML (or Markdown) report that includes:
-      - Document summary (title, pages, elements, chunks).
-      - Per-page element map (element type, reading order, section).
-      - Sample chunks with content preview.
-      - Relationship summary.
-      - Processing metrics (time per stage).
-    - Uses Jinja2 or simple f-string templates to render the report.
-  - Organize output directory as:
-    ```
-    outputs/{doc_id}/
-    ├── chunks.jsonl
-    ├── chunks.parquet
-    ├── elements.jsonl
-    ├── elements.parquet
-    ├── relationships.jsonl
-    ├── relationships.parquet
-    ├── metadata.json
-    └── review_report.html
-    ```
+  - Create ``src/retrieval/graph_builder.py`` with:
+    1. ``build_nodes(chunks)`` — creates document node, chunk nodes, section nodes (one per unique ``section_path``).
+    2. ``build_edges(chunks)`` — creates:
+       * ``(chunk_N)-[:FOLLOWS]->(chunk_N+1)`` from ``sequence_number`` order.
+       * ``(chunk)-[:BELONGS_TO]->(section)`` from ``section_path``.
+       * ``(chunk_A)-[:REFERS_TO]->(chunk_B)`` from ``refers_to`` lists.
+       * ``(chunk_A)-[:RELATES_TO]->(chunk_B)`` from ``relates_to`` lists.
+    3. ``load_graph(client, nodes, edges)`` — loads into the graph DB.
 - **Out of Scope for This Sub-Task:**
-   - No database loading.
-   - No API endpoints.
+  - No graph-based context expansion or traversal for retrieval — that is future RAG work.
 - **Instructions:**
-  1. Use `orjson` for fast JSON serialization (or `json` with `default=str` for UUID/datetime handling).
-  2. For Parquet, use `pyarrow` or `pandas.DataFrame.to_parquet()`.
-  3. The review report should be self-contained (no external CSS/JS) for easy sharing. Use inline styles or a Markdown file.
-  4. All exports should be atomic: write to a temp file, then rename.
+  1. Use Cypher for Neo4j or openCypher for AGE.
+  2. Node properties: chunk nodes carry ``chunk_id``, ``document_hash``, ``chunk_types``, ``section_path``, ``page_numbers``, ``caption_number``, ``token_count``.
+  3. Edge properties: ``weight`` (default 1.0), ``relationship_type``.
 - **Acceptance Criteria:**
-   - Running `export_all(doc, output_dir)` produces all expected files.
-   - JSONL files are valid (one JSON object per line, each line parseable).
-   - Parquet files can be read back with `pyarrow.parquet.read_table()`.
-   - The review report opens in a browser and displays document structure clearly.
-   - The metadata JSON contains accurate counts.
+  - Graph contains correct node and edge counts matching the chunk metadata.
+  - ``FOLLOWS`` edges form a valid linked list (chunk N → chunk N+1).
+  - ``REFERS_TO`` edges match the resolved cross-references.
 - **Cautionary Points (Risks & Edge Cases):**
-   - UUID serialization: ensure `uuid.UUID` objects are serialized to strings.
-   - `datetime` serialization: use ISO 8601 format.
-   - Very large outputs: JSONL and Parquet handle large datasets well, but memory-mapped writing is preferred for parquet.
-- **Implementation Suggestions:**
-   - Create an `ExportManifest` class that tracks what was exported, when, and with which pipeline version.
-   - Add a `--export-format` option in the future, but default to both JSONL and Parquet.
+  - Duplicate edges: deduplicate before loading.
+  - Large graphs: batch the Cypher statements.
 - **Testing Suggestions:**
-   - Create a mock document with 5 elements, 3 chunks, 10 relationships. Export and verify:
-     - File existence.
-     - File content correctness (read back and compare).
-     - Parquet round-trip: write then read, compare data.
-   - Test review report generation: verify the HTML contains the document title, page count, etc.
+  - Integration test with Neo4j community edition (or mock).
+  - Verify graph queries return expected traversal results.
 - **Done When:**
-   - `pytest tests/test_exporter.py` passes, and manual review of generated reports confirms correctness.
+  - ``pytest tests/test_graph_builder.py`` passes.
 
 ---
 
-### Sub-Task 17: Add Validation / Evaluation Checks and Define Sample Benchmark Documents (R17)
+### Sub-Task 14: Pipeline Orchestrator, Export, and Validation (R15)
 
 - **Status:** Pending
-- **Objective:** Create automated validation checks for pipeline output quality and define a set of sample benchmark documents for regression testing.
-- **Related Requirements:** R17 (Validation & Benchmarks)
-- **Dependencies and Preconditions:** All previous sub-tasks (pipeline is functional).
+- **Objective:** Chain all stages into a single entry point, add CLI, export artifacts, and validate outputs.
+- **Related Requirements:** R15 (Pipeline Orchestrator)
+- **Dependencies and Preconditions:** All sub-tasks 6-13 complete.
 - **In Scope for This Sub-Task:**
-  - Create `tests/benchmark/` directory.
-  - Create `tests/benchmark/sample_docs/` with at least 3 PDFs:
-    1. A simple document: 3-5 pages, plain text, one table, one image, no formulas.
-    2. A moderately complex document: 10-15 pages, multiple sections, several tables and figures, numbered equations.
-    3. A complex document: 20+ pages, multi-column layout, multi-page spanned tables, charts, footnotes, headers/footers, appendix.
-    - (Note: The existing `2502.04644v1.pdf` can serve as one of these if suitable.)
-  - Create `src/validation/pipeline_validator.py` with:
-    - `PipelineValidationResult` model with per-stage success/failure flags.
-    - `validate_full_pipeline(doc: DocumentSchema) -> PipelineValidationResult` that runs end-to-end validation:
-      - **Coverage:** Every element in the normalized document appears in at least one chunk's `element_refs`.
-      - **Completeness:** All elements have required fields populated.
-      - **Relationship coverage:** Every visual element (table, image, chart, formula) has at least one relationship (caption, nearby, describes).
-      - **Chunk quality checks:**
-        - No chunk exceeds 1.5x the configured token limit (some tolerance allowed for single-element chunks).
-        - Each chunk has at least one element_ref.
-        - No two chunks are identical in content.
-      - **ID uniqueness:** No duplicate element IDs or chunk IDs.
-  - Create `src/validation/benchmark_runner.py` that:
-    - Runs the full pipeline on all benchmark documents.
-    - Collects timing and quality metrics.
-    - Writes a benchmark report to `outputs/benchmark_results.json`.
-  - Create `tests/test_pipeline_integration.py` with at least 3 integration tests that run the full pipeline (or partial, with mocking) and verify the outputs.
-- **Out of Scope for This Sub-Task:**
-   - No human evaluation of chunk quality beyond automated checks.
-   - No retrieval evaluation (NDCG, recall, etc. — that is future work).
-- **Instructions:**
-  1. For benchmark documents: if the project does not have suitable PDFs, create them programmatically using `reportlab` (simple), or download open-access papers (complex).
-  2. For `validate_full_pipeline`: each check should be independent and produce a pass/fail/warning.
-  3. For `benchmark_runner`: use `time.perf_counter` for stage-level timing.
+  - Create ``src/pipeline.py`` with an ``ExtractionPipeline`` class that runs: ingest → extract → validate → chunk → enrich visuals → resolve cross-refs → embed → populate relates-to → load Weaviate → build graph.
+  - CLI entry point via ``console_scripts`` in ``pyproject.toml``.
+  - Export: chunk metadata JSONL, metadata summary JSON.
+  - Validation: chunk coverage (every picture/table has a chunk), ID uniqueness, embedding completeness.
 - **Acceptance Criteria:**
-   - All benchmark documents pass the integrated pipeline (may have warnings, no crashes).
-   - Validation checks catch known issues (e.g., element not in any chunk, duplicate IDs).
-   - Benchmark report is generated with timing and quality metrics.
-   - Integration tests run in CI (no external dependencies except Docling models).
-- **Cautionary Points (Risks & Edge Cases):**
-   - Creating real-looking benchmark PDFs with `reportlab` is time-consuming. Use open-access papers from arXiv (which are CC-licensed) as sample complex documents.
-   - Benchmark documents must be small enough for CI (avoid >50MB PDFs).
-- **Implementation Suggestions:**
-   - For `validate_full_pipeline`, implement as a series of composable validators (similar to the Docling validator pattern).
-   - Store benchmark results as JSON to track regressions over time.
-- **Testing Suggestions:**
-   - Run `validate_full_pipeline` on a known-good output → all checks pass.
-   - Introduce an intentional error (e.g., remove an element from all chunks) → that specific check fails.
-   - Run `benchmark_runner` on all 3 docs and verify output file is produced.
+  - ``edr-pipeline --source doc.pdf --output ./outputs`` runs end-to-end.
+  - All output files produced.
+  - Idempotent re-run produces identical output.
 - **Done When:**
-   - `pytest tests/test_pipeline_integration.py` passes, `benchmark_runner` produces outputs for all sample docs, and manual inspection of validation results confirms correctness.
-
----
-
-### Sub-Task 18: Integrate Full Pipeline Orchestrator
-
-- **Status:** Pending
-- **Objective:** Create a pipeline orchestrator that chains all stages from ingestion through export into a single callable entry point.
-- **Related Requirements:** R1-R17 (all requirements, integration)
-- **Dependencies and Preconditions:** All sub-tasks 1-17 complete.
-- **In Scope for This Sub-Task:**
-  - Create `src/pipeline.py` with:
-    ```python
-    class ExtractionPipeline:
-        def __init__(self, settings: PipelineSettings):
-            ...
-        def run(self, source: str | Path) -> DocumentSchema:
-            # 1. Ingest
-            # 2. Extract with Docling
-            # 3. Validate Docling output
-            # 4. Normalize
-            # 5. Build hierarchy
-            # 6. Process tables
-            # 7. Process images
-            # 8. Process formulas
-            # 9. Generate relationships
-            # 10. Chunk (hierarchical)
-            # 11. Chunk (semantic)
-            # 12. Chunk (cluster)
-            # 13. Export all
-            # 14. Validate pipeline output
-            # 15. Return fully-populated DocumentSchema
-    ```
-  - Add command-line entry point via `console_scripts` in `pyproject.toml`:
-    ```bash
-    edr-pipeline --source path/to/doc.pdf --output ./outputs
-    ```
-  - Implement `run_multiple(directory: str) -> List[DocumentSchema]` for batch processing.
-  - Add progress logging via the structured logger at each stage.
-  - Add checkpoints: if a stage output exists and is valid, skip re-execution (idempotent).
-- **Out of Scope for This Sub-Task:**
-   - No FastAPI server (that is future).
-   - No async processing (single-threaded is fine for this stage).
-- **Instructions:**
-  1. Use the `PipelineSettings` from `utils/config.py`.
-  2. Each stage should be a method on `ExtractionPipeline` that takes the document and returns it updated.
-  3. Log duration per stage.
-  4. The orchestrator should handle partial failures: if chunking fails, the document with extraction/normalization outputs should still be exportable (with errors noted).
-- **Acceptance Criteria:**
-   - `edr-pipeline --source 2502.04644v1.pdf --output ./outputs` runs the full pipeline end-to-end.
-   - All output files are produced in the specified output directory.
-   - Running the pipeline twice on the same input is idempotent (skips completed stages).
-   - A pipeline with a deliberate mid-stage error produces partial outputs and clear error messages.
-- **Cautionary Points (Risks & Edge Cases):**
-   - The pipeline may take several minutes for complex documents. Add a `--verbose` flag for detailed progress and `--dry-run` for validation.
-   - Ensure temporary files are cleaned up on failure.
-- **Implementation Suggestions:**
-   - Use `click` or `argparse` for the CLI if needed, but keep it simple (argparse is sufficient).
-   - Use a `PipelineContext` dataclass to carry state (current doc, settings, timers, errors) through stages.
-- **Testing Suggestions:**
-   - Integration test: run the pipeline on the simple benchmark document and verify the full output directory structure.
-   - Test idempotency: run twice, compare output checksums (should be identical).
-   - Test with non-existent file → clear error.
-- **Done When:**
-   - `pytest tests/test_pipeline.py` passes, and `edr-pipeline --help` works with the CLI.
-
----
+  - ``pytest tests/test_pipeline.py`` passes, CLI works end-to-end.
 
 ## Final Integration & Verification
 
-- **System-Wide Test:** Run `edr-pipeline` on all three benchmark documents (simple, moderate, complex). Verify:
-  - Output directory contains all expected files (chunks, elements, relationships, metadata, review report).
-  - All files are valid (JSONL lines parse, Parquet reads back).
-  - The review report is visually meaningful.
-  - The pipeline completes without errors on all three documents.
+- **System-Wide Test:** Run the full pipeline on the sample document (``2502.04644v1.pdf``). Verify:
+  - Chunk metadata JSON is produced with correct fields.
+  - All three embedding types are represented (text, image, textual_description).
+  - Chunk IDs are deterministic (re-run produces same IDs).
+  - Pipeline completes without unhandled errors.
 - **Completion Checklist:**
-  - [ ] All Pydantic schemas defined and tested (`pytest tests/test_schemas.py`).
-  - [ ] Project structure created, installable via `pip install -e .`.
-  - [ ] Ingestion copies PDFs immutably with metadata manifest.
-  - [ ] Docling extraction works and persists all raw outputs.
-  - [ ] Docling outputs validated (page count, content, structure).
-  - [ ] Normalization converts Docling output to internal schemas.
-  - [ ] Hierarchy builder assigns section paths to all elements.
-  - [ ] Table processor produces markdown/HTML/JSON/summary for all tables.
-  - [ ] Image processor saves assets, classifies types, prepares metadata.
-  - [ ] Formula processor extracts LaTeX and links to explanatory text.
-  - [ ] Relationship generator creates all typed relationships, no duplicates.
-  - [ ] Hierarchical chunker produces section-based chunks with element refs.
-  - [ ] Semantic chunker produces similarity-based chunks.
-  - [ ] Cluster-semantic chunker produces thematic clusters.
-  - [ ] Non-text elements integrated into chunks via structured references.
-  - [ ] Export module writes JSONL, Parquet, metadata, and review reports.
-  - [ ] Validation checks and benchmark documents exist and pass.
+  - [ ] ``ChunkMetadata`` model defined and tested.
+  - [ ] ``make_chunk_id()`` deterministic UUID generation works.
+  - [ ] Docling HybridChunker wrapper extracts all metadata.
+  - [ ] Visual enrichment produces image + description chunks concurrently.
+  - [ ] Cross-reference resolver populates ``refers_to``.
+  - [ ] Relates-to similarity pipeline populates ``relates_to`` (top-3 neighbors, min similarity 0.75).
+  - [ ] Batch embedding pipeline dispatches by ``embedding_type``.
+  - [ ] Weaviate collection created, chunks ingested with filterable properties.
+  - [ ] Graph DB nodes and edges built from chunk metadata.
   - [ ] Pipeline orchestrator runs end-to-end from CLI.
-  - [ ] All tests pass: `pytest tests/`.
-- **Performance Check:** The pipeline should process a 20-page document in under 5 minutes on CPU (or faster on GPU). Log timing per stage for benchmarking.
-- **Error Handling:** The pipeline should never crash with an unhandled exception. Every stage must handle failures gracefully, log the error, and continue or abort with a clear message.
+  - [ ] All tests pass: ``pytest tests/``.
+- **Performance Check:** The chunking + enrichment pipeline should process a 20-page document in under 3 minutes on CPU (excluding LLM description generation which depends on API latency).
+- **Error Handling:** Every stage must handle failures gracefully, log the error, and continue (for non-critical stages) or abort with a clear message (for critical stages like ingestion/extraction).
 
 ## Open Questions
 
-1. **Docling version pinning:** What specific version of `docling` should be targeted? The current `requirements.txt` does not include `docling`. We should add `docling>=2.0,<3.0` (or whatever the current stable version is) to `requirements.txt` / `pyproject.toml`. **Decision needed before Sub-Task 4.**
-2. **Embedding model for semantic chunking:** `BAAI/bge-m3` is specified as the default. Should we also support smaller/faster models (e.g., `all-MiniLM-L6-v2`) for CPU-only environments? Can be resolved during Sub-Task 13 implementation.
-3. **Review report format:** Should the review report be HTML (interactive, with collapsible sections) or Markdown (simpler, version-control friendly)? HTML is specified in the plan but can be changed to Markdown if preferred.
-4. **Benchmark documents:** The project includes `2502.04644v1.pdf` (an arXiv paper). Can we use this as the complex benchmark document, or do we need to identify additional documents? The team should confirm before Sub-Task 17.
+1. **Docling version pinning:** What specific version of ``docling`` is targeted?  Add ``docling>=2.0,<3.0`` to ``pyproject.toml`` dependencies.
+2. **Multimodal embedding model:** ``Qwen/Qwen3-VL-Embedding-2B`` is referenced in the experimental script.  Is this the production model, or should ``sentence-transformers/all-MiniLM-L6-v2`` be used for text-only, with a separate model for images?  Decide before Sub-Task 10.
+3. **Weaviate deployment:** Local Docker or Weaviate Cloud?  Determines connection config for Sub-Task 11.
+4. **Graph DB choice:** Neo4j (Cypher) or Apache AGE (openCypher via PostgreSQL)?  Determines driver choice for Sub-Task 12.
