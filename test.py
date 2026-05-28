@@ -47,7 +47,6 @@ from torch import tensor
 from transformers import AutoTokenizer
 
 from src.chunking.docling_chunker import build_chunk_metadata_list
-from src.multimodal_embeddings.multimodal_embeddings import model
 from src.schemas.single_chunk_schema_model import SingleChunkModel
 from src.utils.caption_extractor import extract_caption_label
 from src.utils.instructor_api_response import get_llm_response_from_instructor
@@ -171,73 +170,27 @@ chunk_metadatas_with_refers_to= resolve_cross_references(chunk_metadatas=chunk_m
                                                         document_name= conv_result.document.origin.filename,
                                                         output_dir= output_dir)
 
+#Build multimodal embeddings
+from src.multimodal_embeddings.multimodal_embeddings import model
+from src.retrieval.embedding_pipeline import (
+    attach_embeddings,
+    build_encode_items,
+    encode_batch,
+)
 
+items = build_encode_items(chunk_metadatas)
+embeddings_list = encode_batch(items, model, batch_size=32)
+docs = attach_embeddings(chunk_metadatas, embeddings_list,document_name= conv_result.document.origin.filename,
+output_dir= output_dir)
 
+#Populate refers to
+import numpy as np
 
+from src.retrieval.similarity import (
+    compute_cosine_similarity_matrix,
+    populate_relates_to,
+)
 
-
-
-
-
-
-
-
-
-
-# rows = []
-# for (
-#     content_text,
-#     content_md,
-#     content_dt,
-#     page_cells,
-#     page_segments,
-#     page,
-# ) in generate_multimodal_pages(conv_result):
-#     dpi = page._default_image_scale * 72
-
-#     rows.append(
-#         {
-#             "document": conv_result.input.file.name,
-#             "hash": conv_result.input.document_hash,
-#             "page_hash": create_hash(
-#                 conv_result.input.document_hash + ":" + str(page.page_no - 1)
-#             ),
-#             "image": {
-#                 "width": page.image.width,
-#                 "height": page.image.height,
-#                 "bytes": page.image.tobytes(),
-#             },
-#             "cells": page_cells,
-#             "contents": content_text,
-#             "contents_md": content_md,
-#             "contents_dt": content_dt,
-#             "segments": page_segments,
-#             "extra": {
-#                 "page_num": page.page_no + 1,
-#                 "width_in_points": page.size.width,
-#                 "height_in_points": page.size.height,
-#                 "dpi": dpi,
-#             },
-#         }
-#     )
-
-# # Generate one parquet from all documents
-# df_result = pd.json_normalize(rows)
-# now = datetime.datetime.now()
-# output_filename = output_dir / f"multimodal_{now:%Y-%m-%d_%H%M%S}.parquet"
-# df_result.to_parquet(output_filename)
-
-# end_time = time.time() - start_time
-
-# _log.info(
-#     f"Document converted and multimodal pages generated in {end_time:.2f} seconds."
-# )
-# if __name__ == "__main__":
-#     main()
-
-# for element, _level in conv_result.document.iterate_items():
-#     print(element)
-
-#%%
-# df_result= pd.read_parquet('Scratch/multimodal_2026-05-21_162607.parquet')
-# print(df_result)
+embeddings_2d = np.stack(embeddings_list)          # np.ndarray (n, d)
+enriched = populate_relates_to(chunk_metadatas_with_refers_to, embeddings_2d, top_k=3,document_name= conv_result.document.origin.filename,
+output_dir= output_dir)

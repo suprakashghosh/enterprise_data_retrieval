@@ -579,7 +579,7 @@ See ``src/chunking/models.py::make_chunk_id()`` for the exact implementation.
 
 ### Sub-Task 10: Implement Batch Multimodal Embedding Pipeline (R12)
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Build a batch ``items_to_encode`` list from chunk metadata, dispatch by ``embedding_type``, and encode all items using a multimodal embedding model.
 - **Related Requirements:** R12 (Multimodal Batch Embedding)
 - **Dependencies and Preconditions:** Sub-Task 8 (all chunks created).  Multimodal embedding model available (e.g., ``Qwen/Qwen3-VL-Embedding-2B`` or similar via ``sentence-transformers``).
@@ -616,7 +616,7 @@ See ``src/chunking/models.py::make_chunk_id()`` for the exact implementation.
 
 ### Sub-Task 11: Populate ``relates_to`` via Top-k Nearest Neighbors (R12b)
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** For each chunk, compute its top-k most similar chunks by cosine similarity on the embeddings from Sub-Task 10 and populate ``relates_to``.  Sparse, deterministic, no clustering dependency.
 - **Related Requirements:** R12b (Relates-to via Top-k Similarity)
 - **Dependencies and Preconditions:** Sub-Task 10 (embeddings computed and attached to chunks).  Sub-Task 6 (ChunkMetadata model with ``relates_to`` and ``element_self_refs`` fields).

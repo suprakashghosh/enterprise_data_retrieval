@@ -90,8 +90,8 @@ def resolve_cross_references(
     chunk_metadatas: List[ChunkMetadata],
     pic_table_lookup: Dict[str, Any],
     text_lookup: Dict[str, str],
-    document_name: str,
-    output_dir:Optional[Path] = None,
+    document_name: str = "",
+    output_dir: Optional[Path] = None,
 ) -> List[ChunkMetadata]:
     """Resolve caption references in chunk text and populate ``refers_to``.
 
