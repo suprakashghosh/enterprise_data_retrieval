@@ -1,15 +1,16 @@
-from typing import Iterator, List, Dict, Optional, Literal
+from typing import Dict, Iterator, List, Literal, Optional
+
 from agno.agent import Agent, RunResponse
+from agno.memory.v2.db.sqlite import SqliteMemoryDb
+from agno.memory.v2.memory import Memory
 from agno.models.openai import OpenAIChat
-from agno.tools.duckduckgo import DuckDuckGoTools
-from agno.tools.reasoning import ReasoningTools
-from agno.tools.python import PythonTools
-from agno.utils.pprint import pprint_run_response
-from pydantic import BaseModel, Field
 from agno.team import Team
 from agno.tools import tool
-from agno.memory.v2.memory import Memory
-from agno.memory.v2.db.sqlite import SqliteMemoryDb
+from agno.tools.duckduckgo import DuckDuckGoTools
+from agno.tools.python import PythonTools
+from agno.tools.reasoning import ReasoningTools
+from agno.utils.pprint import pprint_run_response
+from pydantic import BaseModel, Field
 
 # Create a memory instance with persistent storage
 # memory_db = SqliteMemoryDb(table_name="memory", db_file="memory.db")
@@ -17,7 +18,7 @@ from agno.memory.v2.db.sqlite import SqliteMemoryDb
 
 def retriever(agent: Agent, query: str, num_documents: Optional[int], **kwargs) -> Optional[list[dict]]:
   pass
-  
+
 
 valid_tools= ["web_search", "coding", "mind_map", "own_knowledge"]
 
@@ -55,10 +56,10 @@ mind_map_agent= Agent(
     tools=[ReasoningTools()],
     model=OpenAIChat("gpt-4o"),
     show_tool_calls=True
-) 
+)
 
 
-lead_researcher_system_prompt= """You are an intelligent researcher. Given any query, your goal is to understand it minutely, 
+lead_researcher_system_prompt= """You are an intelligent researcher. Given any query, your goal is to understand it minutely,
 break it down into a series of steps required to come to the final conclusion and utilize your team for executing your steps.
 """
 
@@ -94,9 +95,9 @@ team = Team(
 
 while True:
     query= input("Please enter your query: ")
-    team.print_response(message= query, 
-                        stream= True, 
+    team.print_response(message= query,
+                        stream= True,
                         stream_intermediate_steps= True,
-                        show_reasoning= True, 
+                        show_reasoning= True,
                         show_reasoning_verbose= True
                         )

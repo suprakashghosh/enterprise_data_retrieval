@@ -1,217 +1,94 @@
 # Enterprise Data Retrieval (Mugen)
 
-An early-stage research prototype for enterprise-grade document intelligence and retrieval-augmented generation (RAG), purpose-built for **complex, visually rich documents** such as financial reports, research papers, and corporate filings.
+A production-grade document ingestion, structured chunking, and embedding pipeline for
+complex, visually rich documents — financial reports, research papers, corporate
+filings, and beyond.
 
 ---
+
+## Overview
+
+The pipeline ingests a PDF, extracts all structural and visual elements via
+**Docling 2.x**, produces typed ``ChunkMetadata`` instances (the single source of
+truth), enriches visual elements with LLM-generated descriptions, resolves
+cross-references (e.g. "see Figure 3"), computes multimodal embeddings, and
+  populates ``relates_to`` via top-k cosine similarity.  Outputs are structured for
+  direct loading into Weaviate (vector DB) and Neo4j / Apache AGE (graph DB).
+
+  ---
 
 ## Problem Statement
 
-Traditional RAG pipelines treat documents as flat text — they chunk paragraphs, embed them, and retrieve by
-semantic similarity. This approach breaks down for enterprise documents that contain:
+Traditional RAG pipelines treat documents as flat text — they chunk paragraphs,
+embed them, and retrieve by semantic similarity. This breaks for enterprise
+documents containing:
 
-- **Tables** with critical structured data
+- **Tables** with structured data
 - **Charts and graphs** conveying trends and relationships
-- **Images and diagrams** that complement or replace textual explanations
-- **Mathematical formulas** requiring specialized handling
-- **Complex layouts** where reading order and element proximity matter
+- **Images and diagrams** that complement or replace text
+- **Cross-references** ("see Figure 3", "as shown in Table IV")
+- **Multi-column / complex layouts** where reading order and proximity matter
 
-Key shortcomings of flat-text retrieval:
+This project addresses those shortcomings through:
 
-1. **Loss of structural context** — a table caption, its footnotes, and the surrounding paragraph are
-   disconnected across chunks.
-2. **No cross-element relationships** — a paragraph that *describes* a chart or *refers to* a table is
-   semantically isolated.
-3. **No query-time reasoning** — complex questions cannot be decomposed, expanded, or verified against a
-   structured knowledge base.
-
-This project explores a **multi-stage pipeline** that extracts, structures, and links every document element,
-then uses graph-based retrieval and agentic reasoning to answer complex queries.
+1. **Multi-modal understanding** — text, tables, charts, and images are each
+   embedded with the appropriate encoder.
+2. **Structured relationships** — explicit `refers_to` (cross-references) and
+   `relates_to` (semantic similarity) edges link chunks into a graph.
+3. **Deterministic, auditable IDs** — UUIDv5 chunk IDs are stable across re-runs,
+   enabling idempotent indexing and graph construction.
 
 ---
 
-## Target Document Types
-
-| Category | Examples |
-|----------|----------|
-| **Financial documents** | Annual reports, 10-K filings, earnings transcripts, balance sheets |
-| **Research papers** | Scientific articles, pre-prints, arXiv papers |
-| **Corporate documents** | Whitepapers, technical reports, internal memos |
-| **Rich media documents** | Documents containing charts, graphs, images, tables, formulas |
-
----
-
-## High-Level Architecture
-
-The proposed pipeline consists of the following stages:
+## Pipeline Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     1. DOCUMENT INGESTION                        │
-│   PDF extraction, OCR, image/page rendering                     │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                  2. LAYOUT ANALYSIS (DocLayout YOLO)             │
-│   Detect: text blocks, tables, figures, captions, formulas,     │
-│   headers, footnotes, etc.                                      │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                 3. ELEMENT EXTRACTION & PARSING                  │
-│   • Text: hierarchical / semantic / cluster semantic chunking   │
-│   • Tables: structured row/column extraction                    │
-│   • Images/charts: metadata extraction + caption association    │
-│   • Formulas: LaTeX or symbolic representation                  │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              4. RELATIONSHIP & GRAPH CONSTRUCTION                │
-│   Tag elements with metadata:                                   │
-│   - relates_to, contains, references, appears_before, etc.      │
-│   - Build a knowledge graph (via LightRAG or custom pipeline)   │
-│   - Link chunks to their context (section, page, parent element)│
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                        5. RETRIEVAL & QUERY                      │
-│   • Query decomposition                                         │
-│   • Query expansion / reformulation                             │
-│   • Hybrid search (vector + keyword + graph)                    │
-│   • Graph-based context expansion                               │
-│   • Agentic reasoning & answer synthesis                        │
-└─────────────────────────────────────────────────────────────────┘
+PDF (raw bytes)
+  │  [ingestion/ingestor.py]
+  ▼
+Immutable storage + manifest
+  │  [extraction/docling_extractor.py]
+  ▼
+DoclingDocument (pages, layout items, tables, text)
+  │  [chunking/docling_chunker.py — HybridChunker]
+  ▼
+ChunkMetadata[]  ◄── single source of truth (19 fields, frozen Pydantic v2)
+  │
+  ├─ Embedding dispatch
+  │    text  ──► chunk_text encoded
+  │    image ──► image_uri loaded & encoded by multimodal model
+  │    textual_description ──► LLM-generated description embedded
+  │
+  ├─ [visual_enricher.py]        ──► +2 chunks per picture/table (image + description)
+  ├─ [cross_reference_resolver]  ──► populates refers_to[]
+  ├─ [embedding_pipeline.py]     ──► vectors + attach_embeddings → Weaviate-ready dicts
+  └─ [similarity.py]             ──► top-3 cosine → populates relates_to[]
 ```
 
----
+### ChunkMetadata — The Core Data Model
 
-## Key Capabilities
+Every chunk carries 19 fields in a frozen Pydantic v2 model:
 
-### Currently Explored (via Notebooks & Scripts)
+| Category | Fields |
+|----------|--------|
+| **Identity** | `chunk_id`, `document_name`, `document_type`, `document_hash` |
+| **Embedding** | `embedding_type` (`text` / `image` / `textual_description`), `chunk_text` |
+| **Structure** | `chunk_types`, `section_path`, `section_headings`, `page_numbers`, `sequence_number` |
+| **Visual** | `image_type`, `image_uri`, `caption_text`, `caption_number` (parallel lists) |
+| **Graph linking** | `element_self_refs`, `refers_to`, `relates_to` |
+| **Quality** | `token_count` |
 
-| Capability | Location | Status |
-|------------|----------|--------|
-| **PDF data extraction** with docling | `src/notebooks/1_PDF_data_extraction.ipynb` | Prototype |
-| **DocLayout YOLO** layout detection (text, tables, figures, formulas, captions, etc.) | `src/notebooks/2_Doclayout_YOLO_Document_layout_extractor.ipynb` | Prototype |
-| **PDF layout graph** construction (element-to-element spatial/structural relationships) | `src/notebooks/3_PDF_layout_graph.ipynb` | Prototype |
-| **Image & table metadata augmentation** (stub / scaffolding) | `src/notebooks/4_image_and_table_metadata_augmentation.ipynb` | Skeleton |
-| **Knowledge graph creation** using LightRAG | `src/notebooks/5_Knowledge_graph_creation.ipynb` | Prototype |
-| **Agentic extraction & reasoning** with agno multi-agent teams | `src/notebooks/6_Agentic_extraction.ipynb` | Prototype |
-| **Agent reasoning utilities** (Pydantic models, tool definitions) | `src/agentic_reasoning.py` | In progress |
+See `src/chunking/models.py` for the full model.
 
-### Planned / In Progress
+### Export / Output Files
 
-- [ ] Hybrid chunking strategies (hierarchical + semantic + cluster semantic)
-- [ ] Element-level metadata tagging with `relates_to`, `contains`, `references` relationships
-- [ ] Graph database integration for structured context expansion
-- [ ] Query decomposition and expansion module
-- [ ] Hybrid search combining dense vectors, sparse (BM25), and graph traversal
-- [ ] Post-retrieval context expansion using the knowledge graph
-- [ ] Production-grade API and ingestion pipeline
+Each pipeline stage can optionally export its output to disk:
 
----
-
-## Repository Structure
-
-```
-enterprise_data_retrieval/
-├── README.md                     # This file
-├── requirements.txt              # Python dependencies
-├── main.ipynb                    # Scratch / exploratory notebook
-├── 2502.04644v1.pdf              # Sample PDF for testing
-│
-├── src/
-│   ├── agentic_reasoning.py      # Agent-based reasoning utilities (agno)
-│   │
-│   └── notebooks/
-│       ├── 1_PDF_data_extraction.ipynb
-│       │       PDF ingestion via docling (DocumentConverter, pipeline options)
-│       │
-│       ├── 2_Doclayout_YOLO_Document_layout_extractor.ipynb
-│       │       Layout detection using DocLayout YOLO (YOLOv10) —
-│       │       identifies titles, plain text, figures, tables, captions,
-│       │       formulas, footnotes, etc.
-│       │
-│       ├── 3_PDF_layout_graph.ipynb
-│       │       Builds a graph of page elements with spatial/structural links
-│       │       (Ollama integration for LLM-assisted relationship inference)
-│       │
-│       ├── 4_image_and_table_metadata_augmentation.ipynb
-│       │       Skeleton / stub for enriching image and table elements
-│       │       with descriptive metadata
-│       │
-│       ├── 5_Knowledge_graph_creation.ipynb
-│       │       LightRAG-based knowledge graph construction from extracted
-│       │       document content (entities, relationships, vector storage via FAISS)
-│       │
-│       ├── 6_Agentic_extraction.ipynb
-│       │       Multi-agent extraction system (agno Team with web search,
-│       │       coding, and mind-map agents for structured reasoning)
-│       │
-│       └── Trivial/
-│           ├── Detectron_Deep Layout Parsing.ipynb
-│           ├── Meta SAM_automatic_mask_generator_example.ipynb
-│           └── Meta_SAM_predictor_example.ipynb
-│                   Exploratory / experimental notebooks for alternative
-│                   layout parsing approaches (Detectron2, SAM)
-│
-├── .gitignore
-└── .opencode/                   # IDE/agent configuration (optional)
-```
-
-> **Note:** Notebooks numbered 1–6 represent a suggested exploration order. The code is largely
-> self-contained within each notebook and was developed on Windows; paths and absolute file references
-> may need adjustment for your environment.
-
----
-
-## Planned Retrieval Flow
-
-```
-                         USER QUERY
-                             │
-                             ▼
-               ┌─────────────────────────┐
-               │   Query Decomposition    │
-               │   & Expansion            │
-               └──────────┬──────────────┘
-                          │
-                    ┌─────┴──────┐
-                    │            │
-                    ▼            ▼
-          ┌──────────────┐  ┌──────────────┐
-          │ Dense Vector  │  │  Sparse /    │
-          │ Search (FAISS)│  │  BM25 Search │
-          └──────┬───────┘  └──────┬───────┘
-                 │                 │
-                 └──────┬──────────┘
-                        ▼
-          ┌─────────────────────────┐
-          │   Hybrid Search Results │
-          └──────────┬──────────────┘
-                     │
-                     ▼
-          ┌─────────────────────────┐
-          │   Graph Context         │
-          │   Expansion             │
-          │   (relates_to, contains,│
-          │    references traversal)│
-          └──────────┬──────────────┘
-                     │
-                     ▼
-          ┌─────────────────────────┐
-          │   Agentic Reasoning     │
-          │   (agno Team)           │
-          │   Web search, coding,   │
-          │   synthesis             │
-          └──────────┬──────────────┘
-                     │
-                     ▼
-                  ANSWER
-```
+| Stage | File pattern | Content |
+|-------|-------------|---------|
+| Chunking | `{doc_stem}_chunk_metadata.json` | All ChunkMetadata as JSON |
+| Embedding | `{doc_stem}_embeddings.json` | chunk_id + embedding + metadata for Weaviate |
+| Relates-to | `{doc_stem}_chunks_metadata_with_relates_to.json` | ChunkMetadata with populated `relates_to` |
 
 ---
 
@@ -219,107 +96,164 @@ enterprise_data_retrieval/
 
 ### Prerequisites
 
-- Python 3.10+
-- (Recommended) A virtual environment: `python -m venv venv && source venv/bin/activate`
+- Python 3.12+
+- A virtual environment is recommended.
 
 ### Installation
 
 ```bash
-# Clone the repository
 git clone <repo-url>
 cd enterprise_data_retrieval
 
-# Create and activate a virtual environment
+# Create virtual environment
 python -m venv venv
-source venv/bin/activate    # On Windows: venv\Scripts\activate
+source venv/bin/activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install in editable mode with dev dependencies
+pip install -e ".[dev]"
 ```
 
-Key dependencies include:
+Key dependencies:
 
 | Library | Purpose |
 |---------|---------|
-| `pdfminer.six[image]` | PDF text + image extraction |
-| `doclayout-yolo` / `ultralytics` | Document layout object detection |
-| `lightrag-hku[api,tools]` | Knowledge graph construction & retrieval |
-| `agno` | Multi-agent orchestration for reasoning |
-| `sentence-transformers` | Text embeddings |
-| `faiss-cpu` | Vector similarity search |
-| `fastapi` + `uvicorn` | API serving (planned) |
-| `ollama` | Local LLM inference (experimental) |
-| `openai` | LLM API access (vision + chat models) |
+| `docling>=2.0` | PDF extraction engine + HybridChunker |
+| `pydantic>=2.0` | Data models (ChunkMetadata, schemas) |
+| `sentence-transformers[image]>=5.5.1` | Multimodal embeddings (text + image) |
+| `numpy>=1.24` | Similarity matrix computation |
+| `instructor>=1.15.1` | Structured LLM calls (image descriptions) |
+| `openai>=2.38.0` | LLM API access |
+| `orjson>=3.0` | Fast JSON serialization |
+| `pyarrow>=10.0` | Parquet output (planned) |
+| `pdfminer.six[image]` | Page count before Docling extraction |
 
-### Running Notebooks
-
-```bash
-jupyter notebook
-# or
-jupyter lab
-```
-
-Navigate to `src/notebooks/` and open notebooks in order (1 → 6) for the intended exploration flow.
-
-### Running the Agentic Reasoning Script
+### Running Tests
 
 ```bash
-cd src
-python agentic_reasoning.py
+pytest tests/ -q
 ```
 
-This launches an interactive CLI loop backed by an agno multi-agent Team. Requires a valid `OPENAI_API_KEY`
-environment variable (or equivalent configuration for the OpenAI-compatible models used).
+Current: **596 pass**, 7 pre-existing failures in `test_extraction.py::TestRunExtractionPipeline`.
+
+### Running the Chunking Pipeline (Manual)
+
+```python
+from pathlib import Path
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
+from docling.document_converter import DocumentConverter, PdfFormatOption
+
+from src.chunking import build_chunk_metadata_list, enrich_visual_chunks, resolve_cross_references
+from src.retrieval import build_encode_items, encode_batch, attach_embeddings, populate_relates_to
+
+# 1. Extract with Docling
+pipeline_opts = PdfPipelineOptions(
+    do_table_structure=True,
+    table_structure_mode=TableFormerMode.ACCURATE,
+)
+conv = DocumentConverter(format_options={
+    InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_opts),
+})
+result = conv.convert("document.pdf")
+
+# 2. Chunk + extract metadata
+chunks = build_chunk_metadata_list(
+    result,
+    max_tokens=300,
+    output_dir=Path("outputs/doc_abc/"),  # optional export
+)
+
+# 3. Enrich visual elements (LLM descriptions)
+enriched = enrich_visual_chunks(chunks, result)
+
+# 4. Resolve cross-references ("see Figure 3" → refers_to)
+resolved = resolve_cross_references(enriched, result)
+
+# 5. Embed
+from sentence_transformers import SentenceTransformer
+model = SentenceTransformer("clip-ViT-B-32")
+items = build_encode_items(resolved)
+embeddings = encode_batch(items, model)
+
+# 6. Attach embeddings + export
+docs = attach_embeddings(
+    resolved, embeddings,
+    document_name="document.pdf",
+    output_dir=Path("outputs/doc_abc/"),
+)
+
+# 7. Populate relates_to
+related = populate_relates_to(
+    resolved, embeddings,
+    document_name="document.pdf",
+    output_dir=Path("outputs/doc_abc/"),
+)
+```
 
 ---
 
-## Usage Notes
+## Key Design Decisions
 
-- **Notebook paths:** The notebooks were developed on Windows and contain absolute paths (e.g.,
-  `C:\Users\...`). Update file paths to match your local environment before running.
-- **Ollama:** Notebooks that use Ollama (e.g., `3_PDF_layout_graph.ipynb`) require [Ollama](https://ollama.ai)
-  installed locally and the relevant model pulled (e.g., `ollama pull deepseek-r1:1.5b`).
-- **API Keys:** `agentic_reasoning.py` and the agentic extraction notebook require an OpenAI API key
-  (`OPENAI_API_KEY`). LightRAG can be configured with either OpenAI or local embedding/LLM backends.
-- **GPU:** Layout detection (DocLayout YOLO) and embedding (FAISS) will benefit significantly from GPU
-  acceleration but also run on CPU.
-- **Data directory:** By default, extracted data, knowledge graphs, and outputs are written to
-  `data/`, `knowledge_graphs/`, and `outputs/` respectively (gitignored).
+### Deterministic Chunk IDs
+``chunk_id = UUIDv5(namespace, "{doc_hash}|{seq:06d}|{sorted_chunk_types}")``.
+Excludes `chunk_text` — IDs are stable across Docling version upgrades.
+
+### Immutable Data Model
+``ChunkMetadata`` is frozen. Downstream stages return new instances via `model_copy(update={...})` — never mutate in place.
+
+### Concurrent LLM Calls
+Image descriptions via `asyncio.gather` + `Semaphore(max_concurrent=5)`.
+Failures don't halt the pipeline — individual errors are logged and the chunk is created with an empty description.
+
+### Caption Normalization
+Both `extract_caption_label()` and `find_all_caption_refs()` normalize type names through the same `VALID_IMAGE_TYPES` map (e.g. "Fig. 3" → `"figure 3"`). This guarantees cross-reference matches are consistent.
+
+### Sibling-Aware Relates-to
+Chunks sharing any `element_self_ref` (e.g. an image chunk and its textual-description variant) are excluded from each other's `relates_to` — a chunk should not "relate to" itself through another embedding modality.
+
+### Pure Numpy Similarity
+No HDBSCAN, no sklearn. Cosine similarity via `einsum`, top-k via `argpartition` (O(n) partial sort). `min_similarity=0.75` threshold keeps edges sparse and meaningful.
 
 ---
 
-## Roadmap / Future Work
+## Roadmap
 
 ### Short-Term
-- [ ] Implement and benchmark hybrid chunking strategies
-- [ ] Build structured metadata tagging for all extracted elements
-- [ ] Formalize relationship extraction (`relates_to`, `contains`, etc.)
-- [ ] Develop the query decomposition and expansion module
+
+- [ ] Weaviate vector DB integration — collection schema, batch ingestion with all filterable properties
+- [ ] Graph DB construction — Neo4j/AGE nodes (document, chunk, section) + edges (follows, belongs_to, refers_to, relates_to)
+- [ ] Pipeline orchestrator — single CLI entry point, JSONL/Parquet export, coverage validation
 
 ### Medium-Term
-- [ ] Graph database integration (Neo4j or similar) for persistent knowledge storage
-- [ ] Hybrid search with fused ranking (vector + BM25 + graph traversal)
+
+- [ ] Hybrid search (vector + BM25 + graph traversal)
 - [ ] Graph-based context expansion at query time
-- [ ] End-to-end evaluation benchmark on enterprise document QA
+- [ ] Query decomposition and expansion
+- [ ] Agentic reasoning with structured knowledge
 
 ### Long-Term
-- [ ] Production-grade ingestion pipeline (async, scalable, incremental updates)
-- [ ] REST API for document upload, indexing, and query
-- [ ] Interactive dashboard for document exploration and graph visualization
-- [ ] Support for additional document formats (DOCX, HTML, scanned images with OCR)
+
+- [ ] REST API (document upload, indexing, query)
+- [ ] Incremental / streaming document updates
+- [ ] Dashboard for graph visualization and document exploration
+- [ ] Support for DOCX, HTML, scanned-image PDFs with OCR
 
 ---
 
 ## Status
 
-> **⚠️ Research / Prototype — Not Production Ready**
+> **Active Development — Production Pipeline In Progress**
 
-This project is an active research prototype. The codebase is exploratory — notebooks contain experimental
-code, hard-coded paths, and work-in-progress implementations. APIs, interfaces, and data models are subject
-to significant change. It is **not** intended for production deployment in its current form.
+The chunking, cross-reference resolution, multimodal embedding, and similarity
+pipeline is fully functional for single-document processing. Weaviate vector DB
+integration, graph DB construction, and the pipeline orchestrator are in progress.
+
+The original notebook-based prototypes in `src/notebooks/` are retained for
+reference but the production pipeline in `src/chunking/` and `src/retrieval/` is
+the canonical implementation.
 
 ---
 
 ## License
 
-*To be determined.*
+MIT
