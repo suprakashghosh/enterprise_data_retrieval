@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from src.chunking.models import ChunkMetadata, make_chunk_id
-from src.retrieval.similarity import (
+from src.loading.similarity import (
     compute_cosine_similarity_matrix,
     populate_relates_to,
     _build_sibling_mask,

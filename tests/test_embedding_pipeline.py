@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from src.chunking.models import ChunkMetadata, make_chunk_id
-from src.retrieval.embedding_pipeline import (
+from src.loading.embedding_pipeline import (
     attach_embeddings,
     build_encode_items,
     encode_batch,

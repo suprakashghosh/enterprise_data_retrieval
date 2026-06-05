@@ -63,6 +63,18 @@ ChunkMetadata[]  ◄── single source of truth (19 fields, frozen Pydantic v2
   ├─ [cross_reference_resolver]  ──► populates refers_to[]
   ├─ [embedding_pipeline.py]     ──► vectors + attach_embeddings → Weaviate-ready dicts
   └─ [similarity.py]             ──► top-3 cosine → populates relates_to[]
+  │
+  ▼
+Weaviate (vector DB) + Neo4j/AGE (graph DB)
+  │  [agentic_retrieval/ — LangGraph agent]
+  ▼
+Agentic Retrieval Loop (per query):
+  1. Decompose query → sub-queries, entities, rules
+  2. Generate hybrid search queries (semantic + keyword)
+  3. Retrieve from vector DB + graph DB (refers_to, relates_to, follows edges)
+  4. Assess retrieval sufficiency
+  5. If insufficient → refine queries & retry (up to max_retries)
+  6. Generate final extraction prompt / answer
 ```
 
 ### ChunkMetadata — The Core Data Model
@@ -89,6 +101,23 @@ Each pipeline stage can optionally export its output to disk:
 | Chunking | `{doc_stem}_chunk_metadata.json` | All ChunkMetadata as JSON |
 | Embedding | `{doc_stem}_embeddings.json` | chunk_id + embedding + metadata for Weaviate |
 | Relates-to | `{doc_stem}_chunks_metadata_with_relates_to.json` | ChunkMetadata with populated `relates_to` |
+
+### Agentic Retrieval (Query-Time)
+
+Once the databases are populated, queries are processed through a **4-stage agentic
+loop** in `src/agentic_retrieval/`:
+
+| Stage | Node | Description |
+|-------|------|-------------|
+| 1 | **Decompose** | Breaks the user query into core objectives, key entities, implied rules, and search concepts |
+| 2 | **Generate Queries** | Produces semantic queries (vector) and keyword queries (BM25), informed by gaps from prior iterations |
+| 3 | **Retrieve & Evaluate** | Hybrid search across Weaviate + graph expansion via `refers_to`/`relates_to`/`follows` edges; LLM evaluates sufficiency |
+| 4 | **Generate Final** | Produces a structured extraction prompt with evaluation criteria and few-shot examples |
+
+Stages 2–3 loop until the evaluator deems context sufficient or `max_retries` is
+exhausted. Currently implemented as a prototype `while` loop; planned refactor
+into a **LangGraph** agent for observability, checkpointing, and controlled state
+transitions.
 
 ---
 
@@ -144,7 +173,7 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMo
 from docling.document_converter import DocumentConverter, PdfFormatOption
 
 from src.chunking import build_chunk_metadata_list, enrich_visual_chunks, resolve_cross_references
-from src.retrieval import build_encode_items, encode_batch, attach_embeddings, populate_relates_to
+from src.loading import build_encode_items, encode_batch, attach_embeddings, populate_relates_to
 
 # 1. Extract with Docling
 pipeline_opts = PdfPipelineOptions(
@@ -223,6 +252,7 @@ No HDBSCAN, no sklearn. Cosine similarity via `einsum`, top-k via `argpartition`
 - [ ] Weaviate vector DB integration — collection schema, batch ingestion with all filterable properties
 - [ ] Graph DB construction — Neo4j/AGE nodes (document, chunk, section) + edges (follows, belongs_to, refers_to, relates_to)
 - [ ] Pipeline orchestrator — single CLI entry point, JSONL/Parquet export, coverage validation
+- [ ] Agentic retrieval — LangGraph agent with decompose → search → evaluate → retry loop
 
 ### Medium-Term
 
@@ -246,11 +276,12 @@ No HDBSCAN, no sklearn. Cosine similarity via `einsum`, top-k via `argpartition`
 
 The chunking, cross-reference resolution, multimodal embedding, and similarity
 pipeline is fully functional for single-document processing. Weaviate vector DB
-integration, graph DB construction, and the pipeline orchestrator are in progress.
+integration, graph DB construction, pipeline orchestrator, and the LangGraph
+agentic retrieval agent are in progress.
 
 The original notebook-based prototypes in `src/notebooks/` are retained for
-reference but the production pipeline in `src/chunking/` and `src/retrieval/` is
-the canonical implementation.
+reference but the production pipeline in `src/chunking/`, `src/loading/`, and
+`src/agentic_retrieval/` is the canonical implementation.
 
 ---
 

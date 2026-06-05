@@ -9,7 +9,7 @@ Build a production-grade extraction and structured chunking pipeline that ingest
 - **R1 (Docling Extraction):** Use Docling as the primary extraction engine. Convert PDFs into Docling document format with full layout, table structure, OCR, and page-level detail.
 - **R2 (Internal Schema):** Define and implement target schemas/data models for Document and Page (minimal — ingestion only) and ChunkMetadata (the retrieval-layer model). Use Docling's native models for extraction; no custom element registry.
 - **R3 (ID Strategy):** Define deterministic UUIDv5 IDs for documents and chunks enabling cross-referencing and idempotent reprocessing.
-- **R4 (Project Structure):** Establish modular project structure with separate packages for ingestion, extraction, chunking, schemas, validation, retrieval, and utilities.
+- **R4 (Project Structure):** Establish modular project structure with separate packages for ingestion, extraction, chunking, schemas, validation, loading, and utilities.
 - **R5 (Raw Document Storage):** Implement ingestion that stores raw PDFs immutably and associates them with a document record.
 - **R6 (Docling Output Persistence):** Persist raw Docling outputs (JSON, markdown, page images, table images) alongside the document record for audit and re-processing.
 - **R7 (Output Validation):** Validate Docling outputs for completeness, correct page counts, non-empty content, and structural consistency.
@@ -23,12 +23,13 @@ Build a production-grade extraction and structured chunking pipeline that ingest
 - **R14 (Graph DB Construction):** Build a graph from chunk metadata: document nodes, chunk nodes, section nodes. Create edges for sequential order (``follows``), section membership (``belongs_to``), cross-references (``refers_to``), and semantic relatedness (``relates_to``). Load into Neo4j or Apache AGE.
 - **R15 (Pipeline Orchestrator, Export & Validation):** Chain all stages into a single callable entry point. Export chunk metadata as JSON/JSONL. Add validation checks for chunk coverage, ID uniqueness, and embedding completeness.
 - **R16 (Out of Scope — Retrieval / RAG):** Hybrid retrieval, query decomposition, graph-based context expansion, answer generation, and agentic reasoning are explicitly out of scope for this plan.
+- **R17 (Agentic Retrieval):** Implement an agentic retrieval loop using LangGraph that decomposes user queries, generates hybrid search queries (vector + keyword), retrieves from Weaviate and graph DB, evaluates sufficiency, and iteratively refines until sufficient context is gathered or max retries exhausted.
 
 ## Scope
 
-- Building the ingestion-to-retrieval pipeline: ingestion, Docling conversion, output persistence, validation, HybridChunker wrapper with metadata extraction, visual enrichment (LLM image descriptions), cross-reference resolution, batch multimodal embedding, Weaviate vector DB loading, and graph DB construction.
+- Building the ingestion-to-retrieval pipeline: ingestion, Docling conversion, output persistence, validation, HybridChunker wrapper with metadata extraction, visual enrichment (LLM image descriptions), cross-reference resolution, batch multimodal embedding, Weaviate vector DB loading, graph DB construction, and agentic retrieval via LangGraph.
 - Defining the ``ChunkMetadata`` model (Pydantic v2) in ``src/chunking/models.py`` — the single source of truth for every chunk.  Legacy schemas in ``src/schemas/`` are retained but not extended.
-- Modularizing into ``ingestion/``, ``extraction/``, ``chunking/``, ``retrieval/``, ``validation/``, ``schemas/``, and ``utils/`` packages under ``src/``.
+- Modularizing into ``ingestion/``, ``extraction/``, ``chunking/``, ``loading/``, ``agentic_retrieval/``, ``validation/``, ``schemas/``, and ``utils/`` packages under ``src/``.
 - Handling PDF documents with Docling; no other input formats in this phase.
 - Supporting all document element types: text, tables, images — captured naturally by Docling chunks.
 - No separate formula or code handling; these are captured within Docling's chunk boundaries.
@@ -79,7 +80,8 @@ ChunkMetadata[] (our Pydantic model — single source of truth)
   │
   ├── [Cross-reference resolver]  → populates refers_to[]
   ├── [Batch embedding]          → vectors stored in Weaviate
-  └── [Graph construction]       → nodes + edges in Neo4j / AGE
+  ├── [Graph construction]       → nodes + edges in Neo4j / AGE
+  └── [Agentic retrieval]        → LangGraph agent — decompose, search, evaluate, retry
 ```
 
 ### ID Strategy
@@ -186,14 +188,18 @@ See ``src/chunking/models.py::make_chunk_id()`` for the exact implementation.
     ```
     src/
     ├── __init__.py
-    ├── schemas/          (from Sub-Task 1)
-    ├── ingestion/        (Sub-Task 3)
-    ├── extraction/       (Sub-Tasks 4-5)
-    ├── normalization/    (Sub-Task 7-9)
-    ├── metadata/         (Sub-Tasks 11-13)
-    ├── chunking/         (Sub-Task 14-15)
-    ├── validation/       (Sub-Task 17)
-    └── utils/            (shared helpers, logging, file I/O)
+    ├── schemas/            (from Sub-Task 1)
+    ├── ingestion/          (Sub-Task 3)
+    ├── extraction/         (Sub-Task 4)
+    ├── chunking/           (Sub-Tasks 6-9) — models, chunker, enricher, cross-ref resolver
+    ├── loading/            (Sub-Tasks 10-11) — embedding pipeline, similarity
+    ├── agentic_retrieval/  (Sub-Task 15) — agentic RAG retrieval loop
+    ├── validation/         (Sub-Task 5)
+    ├── utils/              (shared helpers, logging, file I/O)
+    ├── normalization/      (legacy / archived)
+    ├── metadata/           (placeholder)
+    ├── multimodal_embeddings/  (experimental scripts)
+    └── notebooks/          (exploratory, prototype phase)
     ```
   - Create `__init__.py` in each package with appropriate exports.
   - Create `src/utils/logging.py` with a configured `structlog` or standard `logging` setup.
@@ -584,7 +590,7 @@ See ``src/chunking/models.py::make_chunk_id()`` for the exact implementation.
 - **Related Requirements:** R12 (Multimodal Batch Embedding)
 - **Dependencies and Preconditions:** Sub-Task 8 (all chunks created).  Multimodal embedding model available (e.g., ``Qwen/Qwen3-VL-Embedding-2B`` or similar via ``sentence-transformers``).
 - **In Scope for This Sub-Task:**
-  - Create ``src/retrieval/embedding_pipeline.py`` with:
+  - Create ``src/loading/embedding_pipeline.py`` with:
     1. ``build_encode_items(chunks) -> List[Dict]`` — returns ``[{chunk_id, embedding_type, content (text or image URI), metadata}]``.
     2. ``encode_batch(items, model) -> List[np.ndarray]`` — dispatches to the correct encoder based on ``embedding_type``.
     3. ``attach_embeddings(chunks, embeddings) -> List[Dict]`` — combines chunk metadata with embedding vectors for Weaviate loading.
@@ -621,7 +627,7 @@ See ``src/chunking/models.py::make_chunk_id()`` for the exact implementation.
 - **Related Requirements:** R12b (Relates-to via Top-k Similarity)
 - **Dependencies and Preconditions:** Sub-Task 10 (embeddings computed and attached to chunks).  Sub-Task 6 (ChunkMetadata model with ``relates_to`` and ``element_self_refs`` fields).
 - **In Scope for This Sub-Task:**
-  - Create ``src/retrieval/similarity.py`` with:
+  - Create ``src/loading/similarity.py`` with:
     1. ``compute_cosine_similarity_matrix(embeddings: np.ndarray) -> np.ndarray`` — builds the ``n × n`` cosine similarity matrix from unit-normalized embedding vectors.  Pure numpy.
     2. ``populate_relates_to(chunks: List[ChunkMetadata], embeddings: np.ndarray, *, top_k: int = 3, min_similarity: float = 0.75) -> List[ChunkMetadata]``
        - For each chunk at index ``i``:
@@ -671,7 +677,7 @@ See ``src/chunking/models.py::make_chunk_id()`` for the exact implementation.
 - **Related Requirements:** R13 (Weaviate Integration)
 - **Dependencies and Preconditions:** Sub-Task 10 (embeddings computed).  Weaviate instance running (local or cloud).
 - **In Scope for This Sub-Task:**
-  - Create ``src/retrieval/weaviate_loader.py`` with:
+  - Create ``src/loading/weaviate_loader.py`` with:
     1. ``create_schema(client)`` — defines the Weaviate collection with vectorizer=none (we bring our own vectors) and all filterable properties.
     2. ``ingest_chunks(client, chunks_with_embeddings)`` — batch-inserts chunks into Weaviate.
   - Filterable Weaviate properties must include: ``document_hash``, ``page_numbers`` (int array), ``section_path`` (text), ``caption_number`` (text), ``chunk_types`` (text array), ``token_count`` (int), ``embedding_type`` (text), ``image_type`` (text).
@@ -707,7 +713,7 @@ See ``src/chunking/models.py::make_chunk_id()`` for the exact implementation.
 - **Related Requirements:** R14 (Graph DB Construction)
 - **Dependencies and Preconditions:** Sub-Task 9 (cross-references resolved).  Sub-Task 11 (``relates_to`` populated).  Sub-Task 8 (all chunks created).  Neo4j or Apache AGE available.
 - **In Scope for This Sub-Task:**
-  - Create ``src/retrieval/graph_builder.py`` with:
+  - Create ``src/loading/graph_builder.py`` with:
     1. ``build_nodes(chunks)`` — creates document node, chunk nodes, section nodes (one per unique ``section_path``).
     2. ``build_edges(chunks)`` — creates:
        * ``(chunk_N)-[:FOLLOWS]->(chunk_N+1)`` from ``sequence_number`` order.
@@ -754,6 +760,101 @@ See ``src/chunking/models.py::make_chunk_id()`` for the exact implementation.
 - **Done When:**
   - ``pytest tests/test_pipeline.py`` passes, CLI works end-to-end.
 
+---
+
+### Sub-Task 15: Agentic Retrieval with LangGraph (R17)
+
+- **Status:** Pending
+- **Objective:** Implement an agentic retrieval loop that decomposes user queries, supplements them with context from prior iterations, performs hybrid retrieval (vector + keyword + graph), assesses retrieval quality, and iteratively refines until sufficient context is gathered or max retries are exhausted.  Refactor the existing prototype ``PromptEnhancementAgent`` (``src/agentic_retrieval/agentic_rag.py``) from a simple ``while`` loop into a LangGraph agent for observability, checkpointing, and controlled agent state transitions.
+- **Related Requirements:** R17 (Agentic Retrieval)
+- **Dependencies and Preconditions:** Sub-Task 12 (Weaviate populated), Sub-Task 13 (graph DB populated).  LangGraph must be available.  An LLM provider (Gemini / OpenAI) with structured-output support is required for the decomposition and evaluation stages.
+- **In Scope for This Sub-Task:**
+  - Create ``src/agentic_retrieval/models.py`` — Pydantic models for the 4-stage pipeline:
+    1. ``DecomposedParameter`` — core objective, key entities, implied rules, initial search concepts.
+    2. ``SearchQueries`` — semantic queries (for vector search) and keyword queries (for BM25).
+    3. ``InformationAssessment`` — ``is_sufficient``, reasoning, identified gaps.
+    4. ``EnhancedExtractionPrompt`` — system prompt, evaluation criteria, few-shot examples for the downstream extraction LLM.
+  - Create ``src/agentic_retrieval/prompts.py`` — system prompts for each agent node:
+    - Decomposer: audit business analyst → decompose parameter into searchable components.
+    - Query Generator: information retrieval specialist → generate semantic + keyword queries based on gaps.
+    - Evaluator: audit compliance officer → assess if gathered context is sufficient.
+    - Prompt Engineer: prompt engineering specialist → produce final extraction instructions.
+  - Create ``src/agentic_retrieval/state.py`` — LangGraph ``AgentState`` (TypedDict) with fields:
+    - ``basic_parameter_text`` (str) — the user's original query / audit parameter.
+    - ``decomposed_parameter`` (DecomposedParameter | None)
+    - ``gathered_context`` (List[str]) — accumulated retrieved chunks from all iterations.
+    - ``identified_gaps`` (List[str]) — missing information from last evaluation.
+    - ``tries`` (int) — iteration count.
+    - ``is_sufficient`` (bool) — evaluation gate.
+    - ``final_prompt`` (EnhancedExtractionPrompt | None) — final output.
+    - ``retrieval_sources`` (List[str]) — which sources were queried (vector, keyword, graph).
+  - Create ``src/agentic_retrieval/graph.py`` — LangGraph ``StateGraph`` with nodes and edges:
+    1. **decompose** → decomposes the user query via LLM (``DECOMPOSER_PROMPT`` → ``DecomposedParameter``).
+    2. **generate_queries** → generates ``SearchQueries`` from decomposition + identified gaps (``QUERY_GENERATOR_PROMPT`` → ``SearchQueries``).
+    3. **retrieve** → calls Weaviate hybrid search (vector + BM25), graph traversal (from Neo4j/AGE via ``refers_to``, ``relates_to``, ``follows``), deduplicates, appends to ``gathered_context``.
+    4. **evaluate** → assesses sufficiency via LLM (``EVALUATOR_PROMPT`` → ``InformationAssessment``).  Sets ``is_sufficient`` and ``identified_gaps``.
+    5. **generate_final** → produces the final ``EnhancedExtractionPrompt`` (``PROMPT_ENGINEER_PROMPT`` → ``EnhancedExtractionPrompt``).
+    - Edges:
+      - ``decompose → generate_queries → retrieve → evaluate``
+      - ``evaluate → generate_queries`` (conditional: if ``not is_sufficient`` and ``tries < max_retries``)
+      - ``evaluate → generate_final`` (conditional: if ``is_sufficient`` or ``tries >= max_retries``)
+  - Create ``src/agentic_retrieval/retrieval.py`` — retrieval utilities:
+    1. ``hybrid_search(semantic_queries, keyword_queries, weaviate_client) -> List[str]`` — hybrid vector + BM25 search against Weaviate.
+    2. ``graph_expand(chunk_ids, graph_client) -> List[str]`` — graph-based context expansion (follows ``refers_to``, ``relates_to``, ``follows`` edges up to 2 hops).
+    3. ``deduplicate(context) -> List[str]`` — removes duplicate chunks by ``chunk_id``, preserves order.
+  - Create ``src/agentic_retrieval/__init__.py`` with public exports.
+  - The prototype code (``agentic_rag.py``) will be archived into ``src/agentic_retrieval/old.py`` once the LangGraph version is stable.
+- **Out of Scope for This Sub-Task:**
+  - No answer generation / final RAG synthesis — the agent's output is an ``EnhancedExtractionPrompt`` to be consumed by a downstream extraction LLM.
+  - No multi-turn conversation — each invocation processes a single query.
+  - No incremental graph DB write — the agent only reads from the graph, doesn't update it.
+  - No evaluation of the final extraction quality — that is a separate evaluation pipeline.
+- **Instructions:**
+  1. Start by extracting the prompts and models into their own files (``prompts.py``, ``models.py``) — keeping them decoupled from the graph logic.
+  2. Define ``AgentState`` as a ``TypedDict`` with all fields from the prototype's state variables plus ``retrieval_sources`` for observability.
+  3. Implement each graph node as a standalone async function (``async def decompose(state: AgentState) -> dict``).
+  4. Use LangGraph's ``add_conditional_edges`` for the evaluate → retry / final decision.
+  5. The ``retrieve`` node should call both Weaviate hybrid search and graph expansion, then deduplicate.  Graph expansion runs ``follows`` (prev/next), ``refers_to``, and ``relates_to`` edges up to 2 hops.
+  6. Keep ``max_retries`` configurable (default 3) via ``RunnableConfig`` or a config dict passed at graph invocation.
+  7. Add structured logging at each node transition (``logging.info(f"Node: {node_name}, tries: {tries}, sufficient: {is_sufficient}")``).
+  8. Add a checkpointing saver (``MemorySaver`` or SQLite) so the graph can be inspected / resumed.
+  9. Wrap the graph in a simple ``AgenticRetrievalAgent`` class with an ``async run(query: str) -> EnhancedExtractionPrompt`` method for easy consumption.
+  10. Remove hardcoded API keys — read from environment variables or config.
+- **Acceptance Criteria:**
+  - ``AgenticRetrievalAgent.run("Were the terms and conditions explained?")`` returns an ``EnhancedExtractionPrompt`` with populated fields.
+  - The agent retries when ``is_sufficient`` is ``False`` and stops at ``max_retries`` even if not sufficient.
+  - Each retry iteration adds new, non-duplicate context to ``gathered_context``.
+  - Graph DB expansion retrieves related chunks via ``refers_to`` and ``relates_to`` edges.
+  - LangGraph checkpointing allows inspection of intermediate states.
+  - No hardcoded credentials — API keys and Weaviate/Neo4j connection params come from config.
+- **Cautionary Points (Risks & Edge Cases):**
+  - **LLM API errors during decompose/evaluate:** If the LLM call fails, the agent should optionally retry the LLM call (up to N retries) before failing the entire run.  LangGraph's built-in retry policy can handle this.
+  - **Empty retrieval results:** If no chunks are returned for a query iteration, the evaluator should still run — it may conclude that the knowledge base simply doesn't contain the information.
+  - **Token limits on gathered_context:** After many retries, the accumulated context may exceed the LLM's context window.  Implement truncation or summarization of ``gathered_context`` before passing to the evaluator and prompt engineer nodes.
+  - **Graph DB latency:** Graph expansion can be slow for large graphs.  Limit traversal to 2 hops and implement a timeout (default 5 seconds) — if the graph query times out, log a warning and continue with only vector + keyword results.
+  - **Instructor API collision:** The prototype has a bug where both ``"role": "system"`` and ``"role": "user"`` are in the same dict (the second ``"role"`` overwrites the first).  Ensure messages use a list format: ``[{"role": "system", "content": ...}, {"role": "user", "content": ...}]``.
+- **Implementation Suggestions:**
+  - Use LangGraph's ``StateGraph(AgentState)`` with typed nodes and conditional edges.
+  - Define a ``RunnableConfig`` that carries ``weaviate_client``, ``graph_client``, ``llm_provider``, and ``max_retries``, passed through the graph config.
+  - For testing, mock all three retrieval backends and mock the LLM to return deterministic structured outputs.
+  - The instructor wrapper should come from ``src/utils/instructor_api_response.py`` (shared with visual enrichment) or a new thin wrapper in ``agentic_retrieval/``.
+- **Testing Suggestions:**
+  - Create ``tests/test_agentic_retrieval.py``:
+    - Mock LLM → test that decompose produces a ``DecomposedParameter``.
+    - Mock LLM + mock retrieval → test that the loop runs exactly once when ``is_sufficient=True`` on first eval.
+    - Mock LLM + mock retrieval → test that the loop retries when ``is_sufficient=False`` for the first N-1 iterations.
+    - Mock LLM + mock retrieval → test that the loop stops at ``max_retries`` even if never sufficient.
+    - Test graph expansion — mock graph client returning related chunk IDs, verify they appear in ``gathered_context``.
+    - Test deduplication — same chunk returned in two iterations, appears only once.
+    - Test empty retrieval — evaluator still runs, concludes insufficient.
+    - Test LangGraph checkpointing — save and load state mid-run.
+- **Done When:**
+  - ``pytest tests/test_agentic_retrieval.py`` passes.
+  - The prototype ``old.py`` is archived and the LangGraph version is the canonical implementation.
+  - The agent processes a real query end-to-end (manual integration test).
+
+---
+
 ## Final Integration & Verification
 
 - **System-Wide Test:** Run the full pipeline on the sample document (``2502.04644v1.pdf``). Verify:
@@ -772,6 +873,7 @@ See ``src/chunking/models.py::make_chunk_id()`` for the exact implementation.
   - [ ] Weaviate collection created, chunks ingested with filterable properties.
   - [ ] Graph DB nodes and edges built from chunk metadata.
   - [ ] Pipeline orchestrator runs end-to-end from CLI.
+  - [ ] Agentic retrieval LangGraph agent processes queries end-to-end.
   - [ ] All tests pass: ``pytest tests/``.
 - **Performance Check:** The chunking + enrichment pipeline should process a 20-page document in under 3 minutes on CPU (excluding LLM description generation which depends on API latency).
 - **Error Handling:** Every stage must handle failures gracefully, log the error, and continue (for non-critical stages) or abort with a clear message (for critical stages like ingestion/extraction).

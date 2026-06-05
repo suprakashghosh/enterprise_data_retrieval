@@ -39,3 +39,4 @@ virtualenv/*
 *.jpg
 *.log
 .cursorignore
+.understand-anything/*

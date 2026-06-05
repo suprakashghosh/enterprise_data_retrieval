@@ -822,6 +822,7 @@ dependencies = [
     { name = "pdfminer-six", extra = ["image"] },
     { name = "pyarrow" },
     { name = "pydantic" },
+    { name = "pytest" },
     { name = "python-dotenv" },
     { name = "sentence-transformers", extra = ["image"] },
 ]
@@ -847,6 +848,7 @@ requires-dist = [
     { name = "pdfminer-six", extras = ["image"] },
     { name = "pyarrow", specifier = ">=10.0" },
     { name = "pydantic", specifier = ">=2.0" },
+    { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "sentence-transformers", extras = ["image"], specifier = ">=5.5.1" },
