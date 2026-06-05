@@ -349,6 +349,8 @@ def attach_embeddings(
                     "caption_number": cm.caption_number,
                     "element_self_refs": cm.element_self_refs,
                     "token_count": cm.token_count,
+                    "chunk_text": cm.chunk_text,
+                    "embedding_type": cm.embedding_type,
                     "refers_to": cm.refers_to,
                     "relates_to": cm.relates_to,
                 },

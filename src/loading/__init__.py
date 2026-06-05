@@ -14,6 +14,11 @@ from src.loading.similarity import (
     compute_cosine_similarity_matrix,
     populate_relates_to,
 )
+from src.loading.weaviate_loader import (
+    create_schema,
+    ingest_chunks,
+    run_weaviate_ingestion,
+)
 
 __all__ = [
     "attach_embeddings",
@@ -21,4 +26,7 @@ __all__ = [
     "encode_batch",
     "compute_cosine_similarity_matrix",
     "populate_relates_to",
+    "create_schema",
+    "ingest_chunks",
+    "run_weaviate_ingestion",
 ]

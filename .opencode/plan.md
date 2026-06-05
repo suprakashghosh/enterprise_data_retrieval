@@ -672,7 +672,7 @@ See ``src/chunking/models.py::make_chunk_id()`` for the exact implementation.
 
 ### Sub-Task 12: Weaviate Vector Database Integration (R13)
 
-- **Status:** Pending
+- **Status:** Completed
 - **Objective:** Load chunks and their embeddings into Weaviate with all filterable properties exposed for hybrid retrieval.
 - **Related Requirements:** R13 (Weaviate Integration)
 - **Dependencies and Preconditions:** Sub-Task 10 (embeddings computed).  Weaviate instance running (local or cloud).
@@ -724,7 +724,7 @@ See ``src/chunking/models.py::make_chunk_id()`` for the exact implementation.
 - **Out of Scope for This Sub-Task:**
   - No graph-based context expansion or traversal for retrieval — that is future RAG work.
 - **Instructions:**
-  1. Use Cypher for Neo4j or openCypher for AGE.
+  1. Use Cypher for Neo4j.
   2. Node properties: chunk nodes carry ``chunk_id``, ``document_hash``, ``chunk_types``, ``section_path``, ``page_numbers``, ``caption_number``, ``token_count``.
   3. Edge properties: ``weight`` (default 1.0), ``relationship_type``.
 - **Acceptance Criteria:**

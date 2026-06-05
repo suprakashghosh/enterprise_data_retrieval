@@ -30,6 +30,7 @@ dependencies = [
     "instructor>=1.15.1",
     "google-genai>=2.6.0",
     "pytest>=9.0.3",
+    "weaviate-client>=4.0",
 ]
 
 [project.optional-dependencies]
