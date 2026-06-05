@@ -740,29 +740,7 @@ See ``src/chunking/models.py::make_chunk_id()`` for the exact implementation.
 - **Done When:**
   - ``pytest tests/test_graph_builder.py`` passes.
 
----
-
-### Sub-Task 14: Pipeline Orchestrator, Export, and Validation (R15)
-
-- **Status:** Pending
-- **Objective:** Chain all stages into a single entry point, add CLI, export artifacts, and validate outputs.
-- **Related Requirements:** R15 (Pipeline Orchestrator)
-- **Dependencies and Preconditions:** All sub-tasks 6-13 complete.
-- **In Scope for This Sub-Task:**
-  - Create ``src/pipeline.py`` with an ``ExtractionPipeline`` class that runs: ingest → extract → validate → chunk → enrich visuals → resolve cross-refs → embed → populate relates-to → load Weaviate → build graph.
-  - CLI entry point via ``console_scripts`` in ``pyproject.toml``.
-  - Export: chunk metadata JSONL, metadata summary JSON.
-  - Validation: chunk coverage (every picture/table has a chunk), ID uniqueness, embedding completeness.
-- **Acceptance Criteria:**
-  - ``edr-pipeline --source doc.pdf --output ./outputs`` runs end-to-end.
-  - All output files produced.
-  - Idempotent re-run produces identical output.
-- **Done When:**
-  - ``pytest tests/test_pipeline.py`` passes, CLI works end-to-end.
-
----
-
-### Sub-Task 15: Agentic Retrieval with LangGraph (R17)
+### Sub-Task 14: Agentic Retrieval with LangGraph (R17)
 
 - **Status:** Pending
 - **Objective:** Implement an agentic retrieval loop that decomposes user queries, supplements them with context from prior iterations, performs hybrid retrieval (vector + keyword + graph), assesses retrieval quality, and iteratively refines until sufficient context is gathered or max retries are exhausted.  Refactor the existing prototype ``PromptEnhancementAgent`` (``src/agentic_retrieval/agentic_rag.py``) from a simple ``while`` loop into a LangGraph agent for observability, checkpointing, and controlled agent state transitions.
@@ -852,6 +830,26 @@ See ``src/chunking/models.py::make_chunk_id()`` for the exact implementation.
   - ``pytest tests/test_agentic_retrieval.py`` passes.
   - The prototype ``old.py`` is archived and the LangGraph version is the canonical implementation.
   - The agent processes a real query end-to-end (manual integration test).
+
+---
+
+### Sub-Task 15: Pipeline Orchestrator, Export, and Validation (R15)
+
+- **Status:** Pending
+- **Objective:** Chain all stages into a single entry point, add CLI, export artifacts, and validate outputs.
+- **Related Requirements:** R15 (Pipeline Orchestrator)
+- **Dependencies and Preconditions:** All sub-tasks 6-14 complete.
+- **In Scope for This Sub-Task:**
+  - Create ``src/pipeline.py`` with an ``ExtractionPipeline`` class that runs: ingest → extract → validate → chunk → enrich visuals → resolve cross-refs → embed → populate relates-to → load Weaviate → build graph.
+  - CLI entry point via ``console_scripts`` in ``pyproject.toml``.
+  - Export: chunk metadata JSONL, metadata summary JSON.
+  - Validation: chunk coverage (every picture/table has a chunk), ID uniqueness, embedding completeness.
+- **Acceptance Criteria:**
+  - ``edr-pipeline --source doc.pdf --output ./outputs`` runs end-to-end.
+  - All output files produced.
+  - Idempotent re-run produces identical output.
+- **Done When:**
+  - ``pytest tests/test_pipeline.py`` passes, CLI works end-to-end.
 
 ---
 
